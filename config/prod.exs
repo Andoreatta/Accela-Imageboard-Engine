@@ -20,6 +20,11 @@ config :accela_imageboard, AccelaImageboardWeb.Endpoint,
     ]
   ]
 
+# Session cookie hardening. This is a compile-time flag (Plug.Session options are
+# baked into the endpoint at compile time), so it must not be turned off here;
+# config/runtime.exs refuses to boot a prod node that disables it.
+config :accela_imageboard, :session_cookie_secure, true
+
 # Do not print debug messages in production
 config :logger, level: :info
 

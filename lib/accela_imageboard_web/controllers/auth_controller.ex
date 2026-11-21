@@ -7,9 +7,15 @@ defmodule AccelaImageboardWeb.AuthController do
   use AccelaImageboardWeb, :controller
   use AshAuthentication.Phoenix.Controller
 
+  # Only local, absolute paths are accepted as a post-auth redirect target.
+  # Rejections matter: a leading "//" is scheme-relative, and browsers
+  # normalise "/\" into "//", so either one becomes an off-site redirect the
+  # moment a request parameter ever reaches `:return_to`.
+  @local_path ~r{\A/(?!/)[^\s\\]*\z}
+
   @doc "Successful authentication: stores the session and redirects back."
   def success(conn, activity, user, token) do
-    return_to = get_session(conn, :return_to) || ~p"/"
+    target = return_to(conn)
 
     message =
       case activity do
@@ -25,7 +31,7 @@ defmodule AccelaImageboardWeb.AuthController do
     # If your resource has a different name, update the assign name here (i.e :current_admin)
     |> assign(:current_user, user)
     |> put_flash(:info, message)
-    |> redirect(to: return_to)
+    |> redirect(to: target)
   end
 
   @doc "Failed authentication: neutral flash message (no user enumeration)."
@@ -69,11 +75,21 @@ defmodule AccelaImageboardWeb.AuthController do
 
   @doc "Signs the user out and clears the session."
   def sign_out(conn, _params) do
-    return_to = get_session(conn, :return_to) || ~p"/"
+    target = return_to(conn)
 
     conn
     |> clear_session(:accela_imageboard)
     |> put_flash(:info, "You are now signed out")
-    |> redirect(to: return_to)
+    |> redirect(to: target)
+  end
+
+  # The session value is only ever written by this application today, but a
+  # redirect target read back from the session is an open redirect waiting for
+  # someone to start populating it from params: allow local paths only.
+  defp return_to(conn) do
+    case get_session(conn, :return_to) do
+      path when is_binary(path) -> if Regex.match?(@local_path, path), do: path, else: ~p"/"
+      _absent_or_invalid -> ~p"/"
+    end
   end
 end

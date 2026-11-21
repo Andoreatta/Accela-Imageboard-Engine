@@ -4,11 +4,26 @@ defmodule AccelaImageboardWeb.Endpoint do
   # The session will be stored in the cookie and signed,
   # this means its contents can be read but not tampered with.
   # Set :encryption_salt if you would also like to encrypt it.
+  #
+  # Hardening:
+  #   * `http_only: true` keeps the cookie away from JavaScript (XSS can still
+  #     act as the user, but cannot exfiltrate the session);
+  #   * `same_site: "Lax"` blocks cross-site POSTs riding on the cookie (CSRF
+  #     defence in depth, on top of Phoenix's CSRF token);
+  #   * `secure: true` keeps the cookie off plain-http requests at all.
+  #
+  # `:session_cookie_secure` is a *compile-time* flag: Plug.Session options are
+  # baked into the endpoint when it is compiled, so it must be set when the
+  # release is built. config/dev.exs disables it for http://localhost;
+  # config/prod.exs keeps it on and config/runtime.exs refuses to boot a prod
+  # node that tries to disable it.
   @session_options [
     store: :cookie,
     key: "_accela_imageboard_key",
     signing_salt: "Uot+Ee/z",
-    same_site: "Lax"
+    same_site: "Lax",
+    http_only: true,
+    secure: Application.compile_env(:accela_imageboard, :session_cookie_secure, true)
   ]
 
   socket "/live", Phoenix.LiveView.Socket,

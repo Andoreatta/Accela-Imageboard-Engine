@@ -2,13 +2,23 @@ defmodule AccelaImageboard.Boards.Board do
   @moduledoc """
   A board (category) that groups threads — e.g. `/g/`, `/a/`.
 
-  Fully public to read; creation/edition is staff-only.
+  Publicly readable; creation/edition is staff-only. A board can be
+  soft-hidden (`hidden`), and the primary read filters hidden boards out, so
+  hiding a board actually hides it and its threads from anonymous visitors.
+  Staff reach hidden boards through `:staff_read` (audit A2) — note that
+  `board.threads` goes through the Thread primary read, so a staff console
+  lists the threads of a hidden board with
+  `Thread |> Ash.Query.filter(board_id == ^board.id) |> Ash.read(action: :staff_read, actor: staff)`.
   """
 
   use Ash.Resource,
     domain: AccelaImageboard.Boards,
     data_layer: AshPostgres.DataLayer,
-    authorizers: [Ash.Policy.Authorizer]
+    authorizers: [Ash.Policy.Authorizer],
+    # The primary read is deliberately filtered (hidden boards excluded), so
+    # every path that resolves a board inherits the filter. Staff use
+    # `:staff_read`.
+    primary_read_warning?: false
 
   postgres do
     table "boards"
@@ -16,14 +26,14 @@ defmodule AccelaImageboard.Boards.Board do
   end
 
   policies do
-    # Boards are publicly listable/readable (hidden boards excluded by
-    # the :list_public filter; a staff reader can read any board by id).
-    policy action([:list_public]) do
+    # Public reads: hidden boards are excluded by the action filters.
+    policy action([:read, :list_public]) do
       authorize_if(always())
     end
 
-    policy action_type(:read) do
-      authorize_if(always())
+    # Staff-only read that includes hidden boards.
+    policy action(:staff_read) do
+      authorize_if(AccelaImageboard.PolicyChecks.Staff)
     end
 
     # Everything else is staff-only.
@@ -53,11 +63,20 @@ defmodule AccelaImageboard.Boards.Board do
   end
 
   actions do
-    defaults([:read])
+    read :read do
+      primary?(true)
+      description("Boards visible to anonymous visitors — hidden boards excluded")
+      filter(expr(hidden == false))
+    end
 
     read :list_public do
       description("Boards visible to anonymous visitors")
       filter(expr(hidden == false))
+      prepare(build(sort: [slug: :asc]))
+    end
+
+    read :staff_read do
+      description("Every board, including hidden ones — staff only")
       prepare(build(sort: [slug: :asc]))
     end
 

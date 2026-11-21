@@ -38,12 +38,24 @@ config :phoenix_live_view,
   # the attribute set on all root tags. Used for Phoenix.LiveView.ColocatedCSS.
   root_tag_attribute: "phx-r"
 
+# Session cookie hardening (see AccelaImageboardWeb.Endpoint).
+#
+# `secure: true` means the session cookie is only ever sent over HTTPS. The flag
+# is compile-time — Plug.Session options are baked into the endpoint when it is
+# compiled — so it must be set when the release is built. config/dev.exs turns it
+# off for http://localhost, config/prod.exs keeps it on and config/runtime.exs
+# refuses to boot a prod node that tries to disable it.
+config :accela_imageboard, :session_cookie_secure, true
+
 # Configure esbuild (the version is required)
 config :esbuild,
   version: "0.25.4",
   accela_imageboard: [
+    # Two entry points: the LiveView bundle plus the small synchronous theme
+    # bootstrap used by the root layout (an inline <script> would be blocked
+    # by the production CSP's `script-src 'self'`).
     args:
-      ~w(js/app.js --bundle --target=es2022 --outdir=../priv/static/assets/js --external:/fonts/* --external:/images/* --alias:@=.),
+      ~w(js/app.js js/theme.js --bundle --target=es2022 --outdir=../priv/static/assets/js --external:/fonts/* --external:/images/* --alias:@=.),
     cd: Path.expand("../assets", __DIR__),
     env: %{"NODE_PATH" => [Path.expand("../deps", __DIR__), Mix.Project.build_path()]}
   ]

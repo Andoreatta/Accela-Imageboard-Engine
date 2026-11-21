@@ -5,6 +5,11 @@ defmodule AccelaImageboard.Moderation.ActionLog do
   Complements `ash_paper_trail` data-versioning (which answers "what changed
   in a row") with an actor-facing audit trail ("which staff member did it").
   Rows are insert-only: no update/destroy actions exist.
+
+  `staff_id` is never public input: it is derived from the action's actor by
+  `AccelaImageboard.Moderation.Changes.StaffActor`, so attribution cannot be
+  forged (audit F-12). Staff actions write their own entries through
+  `AccelaImageboard.Moderation.Changes.LogAction` (audit F-13).
   """
 
   use Ash.Resource,
@@ -57,7 +62,9 @@ defmodule AccelaImageboard.Moderation.ActionLog do
 
     create :log do
       primary?(true)
-      accept([:action, :target_type, :target_id, :detail, :staff_id])
+      # `staff_id` is deliberately absent: it is force-set from the actor.
+      accept([:action, :target_type, :target_id, :detail])
+      change(AccelaImageboard.Moderation.Changes.StaffActor)
     end
   end
 end

@@ -52,10 +52,48 @@ config :accela_imageboard, AccelaImageboardWeb.Endpoint,
 # configured to run both http and https servers on
 # different ports.
 
-# Enable dev routes for dashboard and mailbox
+# Enable dev routes for dashboard and mailbox. These routes additionally require
+# HTTP Basic auth (`:dev_admin_basic_auth` below) and fail closed when it is not
+# configured, so a build that accidentally keeps `dev_routes` cannot expose
+# /dev/dashboard or /admin anonymously.
 config :accela_imageboard,
   dev_routes: true,
   token_signing_secret: "BAG2+Wr9vNUwPrIRP3N5wMdtV4u9anmV"
+
+# Credentials for the dev-only tooling routes (/dev/dashboard, /admin).
+# Dev-only defaults; override with DEV_ADMIN_USERNAME / DEV_ADMIN_PASSWORD.
+# In any environment that does not load this file the values are absent and
+# AccelaImageboardWeb.Plugs.DevAdminAuth rejects every request.
+config :accela_imageboard, :dev_admin_basic_auth,
+  username: System.get_env("DEV_ADMIN_USERNAME", "admin"),
+  password: System.get_env("DEV_ADMIN_PASSWORD", "dev-admin-password")
+
+# Dev serves over plain http://localhost, so the session cookie cannot be
+# `Secure` here (it would never be stored). Production keeps it on — see
+# config/config.exs and config/runtime.exs.
+config :accela_imageboard,
+       :session_cookie_secure,
+       System.get_env("SESSION_COOKIE_SECURE", "false") in ~w(true 1 yes)
+
+# Relaxed Content-Security-Policy for development: code reloading, the
+# LiveDashboard and the esbuild bundle need inline scripts/styles and a
+# websocket on the local port. Production uses the strict default baked into
+# AccelaImageboardWeb.Plugs.SecureHeaders.
+config :accela_imageboard, AccelaImageboardWeb.Plugs.SecureHeaders,
+  content_security_policy:
+    "default-src 'self'; " <>
+      "script-src 'self' 'unsafe-inline'; " <>
+      "style-src 'self' 'unsafe-inline'; " <>
+      "img-src 'self' data:; " <>
+      "font-src 'self'; " <>
+      "connect-src 'self' ws://localhost:* wss://localhost:*; " <>
+      "frame-ancestors 'none'; " <>
+      "base-uri 'self'; form-action 'self'; object-src 'none'"
+
+# The IP-hash pepper (:accela_imageboard, AccelaImageboard.Security.IpHash,
+# :secret) is intentionally NOT set in dev/test: IpHash falls back to the
+# endpoint's secret_key_base. Production must provide IP_HASH_SECRET explicitly
+# — see config/runtime.exs.
 
 # Do not include metadata nor timestamps in development logs
 config :logger, :default_formatter, format: "[$level] $message\n"

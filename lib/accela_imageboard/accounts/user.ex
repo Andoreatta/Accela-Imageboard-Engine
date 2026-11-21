@@ -58,6 +58,15 @@ defmodule AccelaImageboard.Accounts.User do
       authorize_if(always())
     end
 
+    # Staff accounts are provisioned by an operator (seeds/`authorize?: false`)
+    # and are never self-registered: the only registration action must not be
+    # authorized for anonymous or non-staff actors. AshAuthentication's own
+    # flows keep working, because they go through the bypass above.
+    policy(action(:register_with_password)) do
+      description("Staff accounts are provisioned by an operator, never self-registered")
+      forbid_if(always())
+    end
+
     policy(action(:set_staff_flag)) do
       description("Only staff can change who is staff")
       authorize_if(actor_attribute_equals(:is_staff, true))

@@ -4,6 +4,10 @@ defmodule AccelaImageboard.Moderation.Report do
 
   Anonymous visitors create reports; only staff can advance the state.
   The state machine is enforced with `ash_state_machine`.
+
+  `post_id` comes from an untrusted visitor, so `Report.create` fails closed
+  unless it resolves to an existing, live post (audit F-17), and every staff
+  transition appends an audit-log entry (audit F-13).
   """
 
   use Ash.Resource,
@@ -56,11 +60,38 @@ defmodule AccelaImageboard.Moderation.Report do
       primary?(true)
       change({AccelaImageboard.Boards.Changes.SetPosterHash, attr: :reporter_hash})
       change({AccelaImageboard.Boards.Changes.RateLimit, key: :report_create})
+      change(AccelaImageboard.Moderation.Changes.ExistingPost)
       accept([:post_id, :reason])
     end
 
-    update(:accept)
-    update(:reject)
-    update(:resolve)
+    update :accept do
+      require_atomic?(false)
+      change(transition_state(:accepted))
+
+      change(
+        {AccelaImageboard.Moderation.Changes.LogAction,
+         action: "report.accept", target_type: "Report"}
+      )
+    end
+
+    update :reject do
+      require_atomic?(false)
+      change(transition_state(:rejected))
+
+      change(
+        {AccelaImageboard.Moderation.Changes.LogAction,
+         action: "report.reject", target_type: "Report"}
+      )
+    end
+
+    update :resolve do
+      require_atomic?(false)
+      change(transition_state(:resolved))
+
+      change(
+        {AccelaImageboard.Moderation.Changes.LogAction,
+         action: "report.resolve", target_type: "Report"}
+      )
+    end
   end
 end

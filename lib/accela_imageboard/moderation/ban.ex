@@ -5,6 +5,9 @@ defmodule AccelaImageboard.Moderation.Ban do
 
   The poster's raw IP is never stored — only the keyed HMAC
   (`AccelaImageboard.Security.IpHash`).
+
+  `:check` returns every active ban matching a poster hash (possibly none).
+  Callers must treat a *read error* as "banned": enforcement is fail-closed.
   """
 
   use Ash.Resource,
@@ -49,16 +52,20 @@ defmodule AccelaImageboard.Moderation.Ban do
   end
 
   actions do
-    defaults([:read])
+    read :read do
+      primary?(true)
+    end
 
     read :active do
       description("Active (non-expired) bans — used by the posting flow")
       filter(expr(is_nil(expires_at) or expires_at > ^DateTime.utc_now()))
     end
 
+    # A plain filtered read, not a `get?`: `poster_hash` is not unique, so a
+    # poster with two active bans would make a single-result read blow up
+    # (audit F-15). Callers treat "no rows" as "not banned".
     read :check do
-      description("Is a given poster_hash currently banned?")
-      get?(true)
+      description("Active bans for a given poster_hash — empty when the poster is not banned")
       filter(expr(poster_hash == ^arg(:poster_hash)))
       argument(:poster_hash, :string, allow_nil?: false)
       filter(expr(is_nil(expires_at) or expires_at > ^DateTime.utc_now()))
@@ -67,10 +74,20 @@ defmodule AccelaImageboard.Moderation.Ban do
     create :ban do
       primary?(true)
       accept([:poster_hash, :reason, :expires_at, :issued_by_id])
+
+      change(
+        {AccelaImageboard.Moderation.Changes.LogAction, action: "ban.ban", target_type: "Ban"}
+      )
     end
 
     destroy :lift do
       primary?(true)
+      # Auditing the lift runs after the delete, so the action is not atomic.
+      require_atomic?(false)
+
+      change(
+        {AccelaImageboard.Moderation.Changes.LogAction, action: "ban.lift", target_type: "Ban"}
+      )
     end
   end
 end

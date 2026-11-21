@@ -20,8 +20,38 @@ if System.get_env("PHX_SERVER") do
   config :accela_imageboard, AccelaImageboardWeb.Endpoint, server: true
 end
 
+# Reads a required environment variable, failing fast both when it is missing and
+# when it is empty: an empty secret is worse than a missing one, because it
+# silently weakens signatures instead of stopping the boot.
+require_env = fn name ->
+  case System.get_env(name) do
+    value when is_binary(value) and value != "" ->
+      value
+
+    _missing_or_empty ->
+      raise """
+      environment variable #{name} is missing or empty.
+
+      Generate a strong value with: mix phx.gen.secret
+      """
+  end
+end
+
 config :accela_imageboard, AccelaImageboardWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
+
+# Reverse proxies whose `X-Forwarded-For` we believe, as a comma separated list of
+# IPs and/or CIDR blocks (e.g. "10.0.0.0/8,2001:db8::/32"). Empty by default:
+# without it `conn.remote_ip` is authoritative and a forged header is ignored —
+# but behind a proxy that also means every visitor shares one poster hash, so set
+# it when there is a proxy in front of the node. See
+# AccelaImageboardWeb.Plugs.RequestContext.
+config :accela_imageboard,
+       :trusted_proxies,
+       System.get_env("TRUSTED_PROXIES", "")
+       |> String.split(",", trim: true)
+       |> Enum.map(&String.trim/1)
+       |> Enum.reject(&(&1 == ""))
 
 if config_env() == :dev do
   # Reload browser tabs when matching files change.
@@ -85,10 +115,34 @@ if config_env() == :prod do
     ],
     secret_key_base: secret_key_base
 
-  config :accela_imageboard,
-    token_signing_secret:
-      System.get_env("TOKEN_SIGNING_SECRET") ||
-        raise("Missing environment variable `TOKEN_SIGNING_SECRET`!")
+  # AshAuthentication signs every token (and derives its key material) from this
+  # secret, which `AccelaImageboard.Secrets` reads out of OTP config. It must be
+  # present and non-empty at boot: an empty signing secret would let anybody mint
+  # valid authentication tokens.
+  config :accela_imageboard, :token_signing_secret, require_env.("TOKEN_SIGNING_SECRET")
+
+  # Pepper for the anonymous poster hashes (`AccelaImageboard.Security.IpHash`).
+  # Required, with no silent fallback: a known pepper lets anyone brute-force the
+  # small IPv4 space back to the raw IP behind every poster hash.
+  config :accela_imageboard, AccelaImageboard.Security.IpHash,
+    secret: require_env.("IP_HASH_SECRET")
+
+  # The session cookie is `Secure` — see lib/accela_imageboard_web/endpoint.ex.
+  # That flag is compiled into the endpoint, so a runtime variable cannot flip
+  # it; an operator who believes they disabled it gets a boot failure instead of
+  # an unknowingly insecure deployment.
+  case System.get_env("SESSION_COOKIE_SECURE") do
+    value when value in ~w(false 0 no) ->
+      raise """
+      SESSION_COOKIE_SECURE=#{value} is not supported in production.
+
+      The session cookie must be sent over HTTPS only. Remove the variable — the
+      flag is compiled into the endpoint at build time — or set it to true.
+      """
+
+    _enabled_or_unset ->
+      config :accela_imageboard, :session_cookie_secure, true
+  end
 
   # ## SSL Support
   #

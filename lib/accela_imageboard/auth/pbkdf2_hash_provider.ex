@@ -11,14 +11,33 @@ defmodule AccelaImageboard.Auth.Pbkdf2HashProvider do
   Hashes are stored in a PHC-style string:
 
       $pbkdf2-sha256$iterations$<b64 salt>$<b64 derived key>
+
+  Decoding is defensive by design (audit F-01/F-02/F-03/F-11):
+
+  * `valid?/2` returns `false` — never raises — for `nil` inputs and for
+    malformed, truncated or downgraded stored hashes, so a missing password
+    or a corrupted row is an authentication failure, not a 500.
+  * The iteration count is re-read from the stored string, so it is clamped
+    to a sane floor and ceiling; a row written with a downgraded cost is
+    rejected instead of silently verifying.
   """
 
   @behaviour AshAuthentication.HashProvider
+
+  require Logger
 
   @iterations 600_000
   @salt_bytes 16
   @key_len 32
   @digest :sha256
+
+  # Accepted range for iterations read back from a stored hash. The floor is
+  # ~1/6 of the current cost (rejecting downgraded/imported rows), the ceiling
+  # bounds the work an attacker who can write a hash row could force.
+  @min_iterations 100_000
+  @max_iterations 10_000_000
+  @min_key_bytes 16
+  @max_key_bytes 64
 
   @impl AshAuthentication.HashProvider
   def hash(input) when is_binary(input) do
@@ -29,7 +48,15 @@ defmodule AccelaImageboard.Auth.Pbkdf2HashProvider do
 
     {:ok, encode(salt, derived)}
   rescue
-    _ -> :error
+    # Narrowed on purpose (audit F-03): the `HashProvider` contract returns
+    # `:error` instead of raising, and the only realistic failures here are
+    # `:crypto`'s `:badarg` (an unusable OpenSSL/provider) or an invalid
+    # argument (an empty/oversized input). Anything else — exits, throws,
+    # unexpected errors in encoding — must not be swallowed as a silent
+    # "cannot hash" that callers would misread as a wrong password.
+    error in [ArgumentError, ErlangError] ->
+      Logger.error("PBKDF2 hashing failed: #{Exception.message(error)}")
+      :error
   end
 
   # Hash with action context — same semantics as hash/1.
@@ -47,6 +74,11 @@ defmodule AccelaImageboard.Auth.Pbkdf2HashProvider do
         false
     end
   end
+
+  # No password set / field not selected: fail closed without burning CPU
+  # twice, but keep the timing cost of a real verification (F-01).
+  def valid?(nil, _stored), do: simulate()
+  def valid?(_input, nil), do: simulate()
 
   # Fills roughly the same amount of time as a real check to blunt timing
   # attacks on user enumeration.
@@ -74,8 +106,9 @@ defmodule AccelaImageboard.Auth.Pbkdf2HashProvider do
          {iterations, ""} <- Integer.parse(iter),
          {:ok, salt} <- Base.decode64(salt),
          {:ok, key} <- Base.decode64(key),
-         true <- iterations > 0 and iterations <= 10_000_000,
-         true <- byte_size(salt) >= 8 and byte_size(key) >= 16 do
+         true <- iterations >= @min_iterations and iterations <= @max_iterations,
+         true <- byte_size(salt) >= 8,
+         true <- byte_size(key) >= @min_key_bytes and byte_size(key) <= @max_key_bytes do
       {:ok, iterations, salt, key}
     else
       _ -> :error

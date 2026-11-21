@@ -4,12 +4,21 @@ defmodule AccelaImageboard.Boards.Post do
 
   Created mostly by anonymous posters; `poster_hash` stores a keyed HMAC of
   the poster's IP (see `AccelaImageboard.Security.IpHash`) — never the raw IP.
+
+  Moderation is a soft delete (`deleted_at`). Every public read path — the
+  primary read, the `Thread.posts` relationship and the thread aggregates —
+  filters `is_nil(deleted_at)`, so a moderated post disappears for everyone
+  except staff, who reach it through the `:moderation_queue` action.
   """
 
   use Ash.Resource,
     domain: AccelaImageboard.Boards,
     data_layer: AshPostgres.DataLayer,
-    authorizers: [Ash.Policy.Authorizer]
+    authorizers: [Ash.Policy.Authorizer],
+    # The primary read is deliberately filtered (moderated posts excluded), so
+    # every path that resolves a post — including relationship loads and
+    # policy checks — inherits the filter. Staff use `:moderation_queue`.
+    primary_read_warning?: false
 
   postgres do
     table "posts"
@@ -21,8 +30,14 @@ defmodule AccelaImageboard.Boards.Post do
   end
 
   policies do
-    policy action_type(:read) do
+    policy action([:read, :in_thread]) do
+      description("Public post reads — moderated content is filtered out by the actions")
       authorize_if(always())
+    end
+
+    policy action(:moderation_queue) do
+      description("Moderation views include soft-deleted posts, so they are staff-only")
+      authorize_if(AccelaImageboard.PolicyChecks.Staff)
     end
 
     policy action(:create) do
@@ -51,7 +66,7 @@ defmodule AccelaImageboard.Boards.Post do
 
     attribute(:is_op, :boolean, default: false, public?: false)
 
-    # Staff moderation marks (content stays unless destroyed).
+    # Staff moderation mark (content stays unless destroyed).
     attribute(:deleted_at, :utc_datetime_usec, public?: false)
   end
 
@@ -65,12 +80,23 @@ defmodule AccelaImageboard.Boards.Post do
   end
 
   actions do
-    defaults([:read])
+    read :read do
+      primary?(true)
+      description("Posts visible to everyone — moderated (soft-deleted) posts excluded")
+      filter(expr(is_nil(deleted_at)))
+    end
 
     read :in_thread do
       description("Posts of a thread, visible to everyone")
       filter(expr(is_nil(deleted_at)))
-      prepare(build(sort: [inserted_at: :asc]))
+      # Posts carry no timestamp in this schema; ids are uuid_v7, i.e. time
+      # ordered, so they are the insertion order.
+      prepare(build(sort: [id: :asc]))
+    end
+
+    read :moderation_queue do
+      description("Every post including moderated ones, newest first — staff only")
+      prepare(build(sort: [id: :desc]))
     end
 
     create :create do
@@ -86,8 +112,14 @@ defmodule AccelaImageboard.Boards.Post do
     # Staff soft-deletes: content disappears but rows remain for audit.
     update :moderate do
       description("Soft-delete a post as staff")
+      require_atomic?(false)
       accept([])
       change(set_attribute(:deleted_at, &DateTime.utc_now/0))
+
+      change(
+        {AccelaImageboard.Moderation.Changes.LogAction,
+         action: "post.moderate", target_type: "Post"}
+      )
     end
 
     destroy :destroy do

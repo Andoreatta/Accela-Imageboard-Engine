@@ -50,9 +50,13 @@ defmodule AccelaImageboardWeb.Router do
     sign_out_route AuthController, "/sign-out",
       overrides: [AccelaImageboardWeb.AuthOverrides, AshAuthentication.Phoenix.Overrides.Default]
 
-    # Remove these if you'd like to use your own authentication views
-    sign_in_route register_path: "/register",
-                  reset_path: "/reset",
+    # Sign-in only. Self-service registration is intentionally not mounted:
+    # this deployment holds staff accounts, and an anonymous visitor must not be
+    # able to create one. Dropping `register_path` removes both the `/register`
+    # page and the "Register" link from the sign-in form. The API endpoint
+    # `POST /auth/user/register` is separately closed by the resource's
+    # `registration_enabled?` setting (see lib/accela_imageboard/accounts/user.ex).
+    sign_in_route reset_path: "/reset",
                   auth_routes_prefix: "/auth",
                   on_mount: [{AccelaImageboardWeb.LiveUserAuth, :live_no_user}],
                   overrides: [
@@ -78,27 +82,31 @@ defmodule AccelaImageboardWeb.Router do
   #   pipe_through :api
   # end
 
-  # Enable LiveDashboard in development
+  # Developer tooling (/dev, /admin) is gated twice: the routes are only
+  # compiled in when `:dev_routes` is set, and every request must then pass HTTP
+  # Basic authentication from `:dev_admin_basic_auth` (see
+  # `AccelaImageboardWeb.Plugs.DevAdminAuth`, which fails closed when the
+  # credentials are not configured). Keep in mind that these LiveViews talk to
+  # the app over the shared `/live` socket, which is not behind this pipeline:
+  # never enable `:dev_routes` in a build that is reachable from the internet.
   if Application.compile_env(:accela_imageboard, :dev_routes) do
-    # If you want to use the LiveDashboard in production, you should put
-    # it behind authentication and allow only admins to access it.
-    # If your application does not have an admins-only section yet,
-    # you can use Plug.BasicAuth to set up some basic authentication
-    # as long as you are also using SSL (which you should anyway).
     import Phoenix.LiveDashboard.Router
+    import AshAdmin.Router
+
+    pipeline :dev_admin do
+      # Only the guard: `:browser` already handles accepts, session, CSRF and the
+      # security headers, and both scopes below run through both pipelines.
+      plug AccelaImageboardWeb.Plugs.DevAdminAuth
+    end
 
     scope "/dev" do
-      pipe_through :browser
+      pipe_through [:browser, :dev_admin]
 
       live_dashboard "/dashboard", metrics: AccelaImageboardWeb.Telemetry
     end
-  end
-
-  if Application.compile_env(:accela_imageboard, :dev_routes) do
-    import AshAdmin.Router
 
     scope "/admin" do
-      pipe_through :browser
+      pipe_through [:browser, :dev_admin]
 
       ash_admin "/"
     end
