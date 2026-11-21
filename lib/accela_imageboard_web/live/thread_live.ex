@@ -5,12 +5,17 @@ defmodule AccelaImageboardWeb.ThreadLive do
 
   ## The anonymous identity
 
-  The poster identity is computed once at mount from the socket's peer address (and,
-  only when the peer is a trusted proxy, from forwarded headers) by
-  `AccelaImageboardWeb.ClientIp`, kept in an assign, and handed to Ash through the
-  action context. It is never read from params, so a visitor cannot claim somebody
-  else's identity; when no peer address is available the domain refuses to attribute
-  the action and no post is created.
+  The poster identity is computed once at mount by `AccelaImageboardWeb.LiveIdentity`
+  from
+  the socket's peer address (and, only when the peer is a trusted proxy, from forwarded
+  headers) together with the anonymous session token the request-context plug put in
+  the session. It is kept in an assign and handed to Ash through the action context as
+  the exact-address hash, the network-prefix hash and the token hash, so a ban can
+  still match a poster who rotates the low bits of an address, or who appears to come
+  from a shared proxy address but keeps their session. None of it is read from
+  params, so a visitor cannot claim somebody else's identity; when there is neither an
+  address nor a token the context is empty, the domain refuses to attribute the action
+  and no post is created.
 
   ## Image uploads
 
@@ -39,7 +44,7 @@ defmodule AccelaImageboardWeb.ThreadLive do
   alias AccelaImageboard.Boards.Post
   alias AccelaImageboard.Media.Storage
   alias AccelaImageboard.Media.Validation
-  alias AccelaImageboardWeb.ClientIp
+  alias AccelaImageboardWeb.LiveIdentity
   alias AccelaImageboardWeb.Content
 
   @impl true
@@ -47,7 +52,7 @@ defmodule AccelaImageboardWeb.ThreadLive do
     with {:ok, board} <- Content.board(slug),
          {:ok, thread} <- Content.thread(board.id, thread_id) do
       {posts, next_cursor} = Content.posts(thread.id)
-      ip_hash = peer_hash(socket)
+      posting_context = LiveIdentity.posting_context(socket)
 
       {:ok,
        socket
@@ -55,9 +60,9 @@ defmodule AccelaImageboardWeb.ThreadLive do
        |> assign(:not_found, false)
        |> assign(:board, board)
        |> assign(:thread, thread)
-       |> assign(:ip_hash, ip_hash)
+       |> assign(:posting_context, posting_context)
        |> assign(:posts_cursor, next_cursor)
-       |> assign(:reply_form, reply_form(thread, ip_hash))
+       |> assign(:reply_form, reply_form(thread, posting_context))
        |> stream(:posts, posts)
        |> allow_upload(:image,
          accept: Validation.extensions(),
@@ -96,10 +101,10 @@ defmodule AccelaImageboardWeb.ThreadLive do
     do: {:noreply, cancel_upload(socket, :image, ref)}
 
   def handle_event("post", %{"post" => params}, socket) do
-    %{ip_hash: ip_hash, thread: thread} = socket.assigns
+    %{posting_context: posting_context, thread: thread} = socket.assigns
 
     cond do
-      is_nil(ip_hash) ->
+      posting_context == %{} ->
         {:noreply,
          put_flash(
            socket,
@@ -156,7 +161,7 @@ defmodule AccelaImageboardWeb.ThreadLive do
 
   defp after_reply(socket, post) do
     socket
-    |> assign(:reply_form, reply_form(socket.assigns.thread, socket.assigns.ip_hash))
+    |> assign(:reply_form, reply_form(socket.assigns.thread, socket.assigns.posting_context))
     |> stream_insert(:posts, load_media(post))
   end
 
@@ -238,18 +243,12 @@ defmodule AccelaImageboardWeb.ThreadLive do
 
   ## identity
 
-  defp peer_hash(socket) do
-    peer_data = get_connect_info(socket, :peer_data)
-    headers = get_connect_info(socket, :x_headers) || []
-    ClientIp.hash(peer_data && peer_data.address, headers)
-  end
-
-  defp reply_form(thread, ip_hash) do
+  defp reply_form(thread, posting_context) do
     Post
     |> AshPhoenix.Form.for_create(:create,
       as: "post",
       params: %{"thread_id" => thread.id},
-      context: ClientIp.anonymous_context(ip_hash)
+      context: posting_context
     )
     |> to_form()
   end

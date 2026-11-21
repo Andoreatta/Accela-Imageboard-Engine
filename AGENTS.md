@@ -48,11 +48,15 @@ version**, not memory:
 
 ### Security invariants (HARD RULES — failing one is a vuln, not a nit)
 
-1. **Anonymous identity is server-only.** `poster_hash` comes from
-   `conn.private[:accela_ip_hash]` (`RequestContext`/`ClientIp`) and is passed
-   to the domain as `context: %{anonymous: %{ip_hash: hash}}`. It is **never**
-   read from params, forms, or any client-controlled input. Any code path
-   where a client can set a poster identity is a critical bug.
+1. **Anonymous identity is server-only.** The identity set (exact IP hash,
+   net scope + net hash, session-token hash) comes from
+   `conn.private[:accela_poster_identity]` / `[:accela_anon_token]`
+   (`RequestContext`/`ClientIp`/`LiveIdentity`) and is passed to the domain
+   as `context: %{anonymous: %{ip_hash:, net_scope:, net_hash:, token_hash:}}`
+   (nils dropped). It is **never** read from params, forms, or any
+   client-controlled input — the token in the session is only honoured when
+   it has the shape this server mints, and is replaced otherwise. Any code
+   path where a client can set a poster identity is a critical bug.
 2. **No `authorize?: false` in product code.** Tests, seeds and fixture
    helpers may use it; `lib/**` and `lib/**_web/**` may not. Staff-only reads
    are separate actions (`:staff_read`, `:moderation_queue`) gated by policy,
@@ -65,10 +69,20 @@ version**, not memory:
    (`BoardOpen`/`ThreadOpen`), media attach (`PostFlowAttach`) and
    `:dev_admin_basic_auth` deny on lookup error, malformed input or missing
    config. Never "fail open for convenience".
-5. **No raw IP persistence.** IPs are hashed with `IP_HASH_SECRET`
-   (`security/ip_hash.ex`, daily rotation `hash_salt` comp). Never log, store
-   or assign a raw client IP beyond request scope. The hash goes in
-   `conn.private`, not `conn.assigns` (keeps it out of templates).
+5. **No raw IP persistence.** The anonymous identity is a set of keyed HMACs
+   (`security/ip_hash.ex`, `security/token_hash.ex`, pepper from
+   `IP_HASH_SECRET` — rotation happens only by rotating the secret, on
+   leak, which invalidates all hashes): the exact per-IP hash, a
+   network-prefix hash (`/24` IPv4, `/64` IPv6) and the hash of a
+   server-issued session token. Never log, store or assign a raw client IP
+   or the raw token beyond request scope; only hashes travel, and they
+   live in `conn.private`, not `conn.assigns`.
+   **Ban scopes**: a ban row targets exactly one identifier (`scope`:
+   `:exact | :ipv4_24 | :ipv6_64 | :token`). `BannedPoster` matches every
+   identifier the request presents; the exact hash is the only source of
+   the rate-limit bucket. A net or token hash must never equal an exact
+   hash of anything (domain-separated HMAC messages) — never weaken that
+   separation.
 6. **Scope = what the visitor can read.** Read policies filter
    (`hidden == false`, `is_nil(deleted_at)`); LiveViews and any future
    websocket/PubSub topics must only ever expose content the same visitor

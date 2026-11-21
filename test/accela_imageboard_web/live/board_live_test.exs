@@ -11,17 +11,24 @@ defmodule AccelaImageboardWeb.BoardLiveTest do
   import AccelaImageboardWeb.BoardCase
   import Phoenix.LiveViewTest
 
+  alias AccelaImageboard.Security.TokenHash
+  alias AccelaImageboardWeb.ClientIp
   alias AccelaImageboardWeb.Content
 
   describe "reading a board" do
     test "lists its threads with the pinned one on top", %{conn: conn} do
       board = create_board(slug: "tech", name: "Technology")
       _older = create_thread(board, subject: "Older thread")
-      _newer = create_thread(board, subject: "Newer thread")
+      newer = create_thread(board, subject: "Newer thread")
       pinned = create_thread(board, subject: "Pinned announcement")
 
       {:ok, _pinned} =
         Ash.update(pinned, %{pinned: true}, action: :staff_update, authorize?: false)
+
+      # Two threads created in the same microsecond would tie on `bumped_at`, and the
+      # tiebreaker is the primary key - so the bump order is made explicit with a reply
+      # instead of relying on creation timestamps.
+      {:ok, _reply} = create_post(newer, body: "a later reply")
 
       {:ok, view, html} = live(unique_conn(conn, 1), "/b/#{board.slug}")
 
@@ -135,6 +142,33 @@ defmodule AccelaImageboardWeb.BoardLiveTest do
       assert has_element?(view, "#new-thread-form")
       assert html =~ "required"
       assert {[], _cursor} = Content.threads(board.id)
+    end
+
+    test "the opening post carries the poster's network and token identity", %{conn: conn} do
+      board = create_board(slug: "tech")
+      token = TokenHash.generate()
+      peer = {10, 42, 29, 7}
+
+      {:ok, view, _html} =
+        conn
+        |> connect_with_session(peer, %{"accela_anon" => token})
+        |> live("/b/#{board.slug}")
+
+      assert {:error, {:live_redirect, %{to: to}}} =
+               view
+               |> form("#new-thread-form", thread: %{subject: "Identified", body: "op body"})
+               |> render_submit()
+
+      thread_id = to |> String.split("/") |> List.last()
+      assert {:ok, thread} = Content.thread(board.id, thread_id)
+      assert {[op], _cursor} = Content.posts(thread.id)
+      identity = ClientIp.identity(peer, [])
+
+      assert op.poster_hash == identity.ip_hash
+      assert op.net_scope == :ipv4_24
+      assert op.net_hash == identity.net_hash
+      assert op.token_hash == TokenHash.hash(token)
+      refute inspect(op) =~ token
     end
 
     test "accepts a thread with no subject and keeps it untitled", %{conn: conn} do

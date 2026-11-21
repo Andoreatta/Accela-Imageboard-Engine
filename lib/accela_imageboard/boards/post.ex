@@ -5,6 +5,19 @@ defmodule AccelaImageboard.Boards.Post do
   Created mostly by anonymous posters; `poster_hash` stores a keyed HMAC of
   the poster's IP (see `AccelaImageboard.Security.IpHash`) — never the raw IP.
 
+  ## The anonymous identity set
+
+  `poster_hash` alone is a fragile identifier: rotating the address (VPN, mobile
+  roaming, Tor, CGNAT) yields a new hash and any ban on it is silently evaded.
+  Content therefore also records the poster's *network prefix* hash
+  (`net_scope` + `net_hash`, see `IpHash.net/1`) and their *session token* hash
+  (`token_hash`, see `AccelaImageboard.Security.TokenHash`) when the server has
+  them. All three are keyed HMACs — no raw IP and no raw token is ever stored —
+  and all three are written by
+  `AccelaImageboard.Boards.Changes.SetPosterIdentity` from the request context
+  only, never from input. They exist so that staff can ban retroactively and
+  ban an identifier that survives address churn (`Moderation.Ban.scope`).
+
   Moderation is a soft delete (`deleted_at`). Every public read path — the
   primary read, the `Thread.posts` relationship and the thread aggregates —
   filters `is_nil(deleted_at)`, so a moderated post disappears for everyone
@@ -107,6 +120,29 @@ defmodule AccelaImageboard.Boards.Post do
       description("Keyed HMAC of the poster IP — never a raw IP")
     end
 
+    # The rest of the identity set (see `Boards.Changes.SetPosterIdentity`):
+    # keyed hashes that let staff ban retroactively across address churn, with
+    # no raw IP (or raw token) ever stored. All three are optional and
+    # server-side only — never accepted from input.
+    attribute :net_scope, :atom do
+      allow_nil?(true)
+      public?(false)
+      constraints(one_of: [:ipv4_24, :ipv6_64])
+      description("Network prefix scope of net_hash: an IPv4 /24 or an IPv6 /64")
+    end
+
+    attribute :net_hash, :string do
+      allow_nil?(true)
+      public?(false)
+      description("Keyed HMAC of the poster's network prefix — never a raw IP")
+    end
+
+    attribute :token_hash, :string do
+      allow_nil?(true)
+      public?(false)
+      description("Keyed HMAC of the poster's anonymous session token — never the token")
+    end
+
     attribute(:is_op, :boolean, default: false, public?: false)
 
     # Staff moderation mark (content stays unless destroyed).
@@ -166,6 +202,7 @@ defmodule AccelaImageboard.Boards.Post do
       change({AccelaImageboard.Boards.Changes.RateLimit, key: :post_create})
       change(AccelaImageboard.Boards.Changes.BannedPoster)
       change(AccelaImageboard.Boards.Changes.SetPosterHash)
+      change(AccelaImageboard.Boards.Changes.SetPosterIdentity)
 
       # Imageboard ordering: a stored reply moves its thread to the top.
       change(AccelaImageboard.Boards.Changes.BumpThread)
@@ -181,6 +218,7 @@ defmodule AccelaImageboard.Boards.Post do
 
       change(AccelaImageboard.Boards.Changes.BannedPoster)
       change(AccelaImageboard.Boards.Changes.SetPosterHash)
+      change(AccelaImageboard.Boards.Changes.SetPosterIdentity)
       change(set_attribute(:is_op, true))
 
       accept([:body, :name, :thread_id])

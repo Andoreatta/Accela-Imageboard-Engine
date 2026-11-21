@@ -47,6 +47,20 @@ defmodule AccelaImageboardWeb.BoardCase do
     })
   end
 
+  @doc """
+  Like `connect_as/2` but the LiveView connection also carries a session, which is how
+  a returning browser presents its anonymous posting token.
+  """
+  def connect_with_session(conn, ip, session) when is_map(session) do
+    conn
+    |> Map.put(:remote_ip, ip)
+    |> Plug.Conn.put_private(:live_view_connect_info, %{
+      peer_data: %{address: ip, port: 0, ssl_cert: nil},
+      x_headers: [],
+      session: session
+    })
+  end
+
   @doc "A structurally valid 1x1 PNG."
   def png do
     Base.decode64!(

@@ -3,11 +3,20 @@ defmodule AccelaImageboardWeb.ClientIp do
   The single source of truth for "which client is this", for both HTTP requests and
   LiveView connections.
 
-  An imageboard's anti-abuse design rests on one value: a stable, keyed hash of the
-  poster's IP that is never stored in raw form. HTTP requests get it from
-  `AccelaImageboardWeb.Plugs.RequestContext`; LiveView post/thread creation gets it
-  from the socket peer data at mount (`Phoenix.LiveView.get_connect_info/2`). Both
-  go through this module so the two paths can never disagree about a poster.
+  An imageboard's anti-abuse design rests on a small set of keyed hashes of the
+  poster, none of which is ever stored in raw form:
+
+    * `ip_hash` - the exact address (the historic identifier);
+    * `net_hash`/`net_scope` - the network prefix (`/24` for IPv4, `/64` for IPv6),
+      which survives a client rotating the low bits of its address;
+    * `token_hash` - the hash of a server-issued anonymous session token (see
+      `token_hash/1`), which survives neither cookies being cleared nor a proxy
+      hiding the address but is stable while the browser keeps its session.
+
+  HTTP requests get them from `AccelaImageboardWeb.Plugs.RequestContext`; LiveView
+  post/thread creation gets them from the socket peer data and session at mount
+  (`Phoenix.LiveView.get_connect_info/2`). Both go through this module so the two
+  paths can never disagree about a poster.
 
   ## Proxy handling
 
@@ -28,6 +37,7 @@ defmodule AccelaImageboardWeb.ClientIp do
   import Bitwise, only: [bsl: 2, bsr: 2]
 
   alias AccelaImageboard.Security.IpHash
+  alias AccelaImageboard.Security.TokenHash
 
   @ipv4_bits 32
   @ipv6_bits 128
@@ -55,6 +65,85 @@ defmodule AccelaImageboardWeb.ClientIp do
   @spec from_conn(Plug.Conn.t()) :: String.t() | nil
   def from_conn(%Plug.Conn{} = conn), do: hash(conn.remote_ip, conn.req_headers)
 
+  @typedoc """
+  The address-derived identifiers a ban can match.
+
+  `ip_hash` is the exact-address hash (the historic identifier), `net_scope` names
+  the prefix length that was hashed (`:ipv4_24` or `:ipv6_64`) and `net_hash` is the
+  hash of that prefix. Rotating the last address octets - or the IPv6 host suffix -
+  changes `ip_hash` but not `net_hash`, which is what makes a ban survive cheap
+  evasion. All of them are keyed HMACs: no raw address is ever stored.
+  """
+  @type identity :: %{
+          ip_hash: String.t(),
+          net_scope: :ipv4_24 | :ipv6_64,
+          net_hash: String.t()
+        }
+
+  @doc """
+  Full anonymous identity (exact hash plus network prefix) for a peer and headers.
+
+  Uses exactly the same resolution as `hash/2`: a forwarded header is believed only
+  when the peer is a configured trusted proxy, and the same right-to-left walk picks
+  the client, so the two identifiers can never describe different clients. Returns
+  `nil` when there is no peer address at all.
+  """
+  @spec identity(:inet.ip_address() | nil, [{String.t(), String.t()}]) :: identity() | nil
+  def identity(nil, _headers), do: nil
+
+  def identity(remote_ip, headers) when is_tuple(remote_ip) do
+    client = resolve(remote_ip, normalize_headers(headers))
+    {net_scope, net_hash} = IpHash.net(client)
+
+    %{ip_hash: IpHash.hash(client), net_scope: net_scope, net_hash: net_hash}
+  end
+
+  @doc """
+  Full anonymous identity for a `Plug.Conn`.
+  """
+  @spec identity_from_conn(Plug.Conn.t()) :: identity() | nil
+  def identity_from_conn(%Plug.Conn{} = conn), do: identity(conn.remote_ip, conn.req_headers)
+
+  @doc """
+  Keyed hash of the anonymous session token, or `nil` when there is no usable token.
+
+  The raw token lives only in the signed session cookie and in `conn.private`; the
+  domain stores this hash, so presenting the same token again is recognised without
+  the server ever persisting the token itself.
+  """
+  @spec token_hash(binary() | nil) :: String.t() | nil
+  def token_hash(token) when is_binary(token) and byte_size(token) > 0, do: TokenHash.hash(token)
+  def token_hash(_no_token), do: nil
+
+  @doc """
+  Ash action context carrying the whole anonymous identity (contract v2).
+
+  Takes the address identity (`identity/2`) and the token hash (`token_hash/1`) and
+  returns `%{anonymous: %{ip_hash: ..., net_scope: ..., net_hash: ..., token_hash: ...}}`
+  with absent values dropped, or `%{}` when neither is available - the domain then
+  refuses to attribute the action instead of inventing an identity.
+
+  Only server-side facts are ever passed in here: the peer address, the trusted-proxy
+  resolution and the session token. Nothing in this map can be supplied by a form.
+  """
+  @spec posting_context(identity() | nil, String.t() | nil) :: map()
+  def posting_context(identity, token_hash) do
+    anonymous =
+      %{
+        ip_hash: present(identity, :ip_hash),
+        net_scope: present(identity, :net_scope),
+        net_hash: present(identity, :net_hash),
+        token_hash: token_hash
+      }
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+      |> Map.new()
+
+    if anonymous == %{}, do: %{}, else: %{anonymous: anonymous}
+  end
+
+  defp present(nil, _key), do: nil
+  defp present(identity, key) when is_map(identity), do: Map.get(identity, key)
+
   @doc """
   Ash action context that carries the anonymous poster identity.
 
@@ -62,6 +151,9 @@ defmodule AccelaImageboardWeb.ClientIp do
   `changeset.context[:anonymous][:ip_hash]`, so the value can only ever come from
   the server. When no peer address is available the context is empty and the domain
   refuses to attribute the action, instead of inventing an identity.
+
+  Kept for the address-only case; prefer `posting_context/2`, which also carries the
+  network prefix and the session token.
   """
   @spec anonymous_context(String.t() | nil) :: map()
   def anonymous_context(nil), do: %{}

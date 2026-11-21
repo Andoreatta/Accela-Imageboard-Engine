@@ -6,6 +6,23 @@ defmodule AccelaImageboard.Moderation.Ban do
   The poster's raw IP is never stored — only the keyed HMAC
   (`AccelaImageboard.Security.IpHash`).
 
+  ## What `poster_hash` identifies: `scope`
+
+  A ban targets one identifier, and `scope` says which kind it is:
+
+  | scope | `poster_hash` holds | survives |
+  | --- | --- | --- |
+  | `:exact` (default) | `IpHash.hash/1` of one address | nothing — change address and the ban is dodged |
+  | `:ipv4_24` | `IpHash.net/1` hash of the /24 | address churn inside the /24 (VPN rotation, CGNAT) |
+  | `:ipv6_64` | `IpHash.net/1` hash of the /64 | host-suffix churn / privacy addresses |
+  | `:token` | `TokenHash.hash/1` of a session token | address changes, as long as the cookie is kept |
+
+  The network and token hashes are recorded on every post that had them (see
+  `AccelaImageboard.Boards.Changes.SetPosterIdentity`), which is what makes a
+  retroactive, evasion-resistant ban possible: staff read the identifiers off
+  the content instead of guessing an address. Existing rows are `:exact`, so the
+  column is purely additive.
+
   `:check` returns every active ban matching a poster hash (possibly none).
   Callers must treat a *read error* as "banned": enforcement is fail-closed.
   """
@@ -41,7 +58,18 @@ defmodule AccelaImageboard.Moderation.Ban do
 
     attribute :poster_hash, :string do
       allow_nil?(false)
-      description("Keyed HMAC of the banned poster's IP")
+
+      description(
+        "The banned identifier — meaning depends on scope: an exact IP hash, " <>
+          "a network prefix hash, or a token hash (never a raw IP or token)"
+      )
+    end
+
+    attribute :scope, :atom do
+      allow_nil?(false)
+      default(:exact)
+      constraints(one_of: [:exact, :ipv4_24, :ipv6_64, :token])
+      description("Which identifier poster_hash holds — see the moduledoc")
     end
 
     attribute(:reason, :string, allow_nil?: false)
@@ -80,7 +108,7 @@ defmodule AccelaImageboard.Moderation.Ban do
 
     create :ban do
       primary?(true)
-      accept([:poster_hash, :reason, :expires_at, :issued_by_id])
+      accept([:poster_hash, :scope, :reason, :expires_at, :issued_by_id])
 
       change(
         {AccelaImageboard.Moderation.Changes.LogAction, action: "ban.ban", target_type: "Ban"}

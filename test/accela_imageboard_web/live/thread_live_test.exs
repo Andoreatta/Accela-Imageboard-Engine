@@ -14,6 +14,8 @@ defmodule AccelaImageboardWeb.ThreadLiveTest do
 
   alias AccelaImageboard.Media.Storage
   alias AccelaImageboard.Security.IpHash
+  alias AccelaImageboard.Security.TokenHash
+  alias AccelaImageboardWeb.ClientIp
   alias AccelaImageboardWeb.Content
 
   setup do
@@ -117,15 +119,20 @@ defmodule AccelaImageboardWeb.ThreadLiveTest do
     test "a reply moves its thread back to the top of the board", %{conn: conn} do
       board = create_board(slug: "tech")
       older = create_thread(board, subject: "Older thread", body: "older op")
-      _newer = create_thread(board, subject: "Newer thread", body: "newer op")
+      newer = create_thread(board, subject: "Newer thread", body: "newer op")
 
-      {:ok, _board_view, before_html} = live(unique_conn(conn, 25), "/b/#{board.slug}")
+      # Bump the newer thread explicitly first: two threads created in the same
+      # microsecond tie on bumped_at, so creation order alone proves nothing.
+      {:ok, newer_view, _html} = live(unique_conn(conn, 25), thread_path(board, newer))
+      newer_view |> form("#reply-form", post: %{body: "newer bump"}) |> render_submit()
+
+      {:ok, _board_view, before_html} = live(unique_conn(conn, 26), "/b/#{board.slug}")
       assert position(before_html, "Newer thread") < position(before_html, "Older thread")
 
-      {:ok, view, _html} = live(unique_conn(conn, 26), thread_path(board, older))
+      {:ok, view, _html} = live(unique_conn(conn, 27), thread_path(board, older))
       view |> form("#reply-form", post: %{body: "bump me"}) |> render_submit()
 
-      {:ok, _bumped_view, after_html} = live(unique_conn(conn, 27), "/b/#{board.slug}")
+      {:ok, _bumped_view, after_html} = live(unique_conn(conn, 28), "/b/#{board.slug}")
       assert position(after_html, "Older thread") < position(after_html, "Newer thread")
     end
 
@@ -142,6 +149,41 @@ defmodule AccelaImageboardWeb.ThreadLiveTest do
       post = find_post(thread, "spoof attempt")
       assert post.poster_hash == IpHash.hash(conn.remote_ip)
       refute post.poster_hash == "forged"
+    end
+
+    test "carries the network prefix and the session token into the posting context", %{
+      conn: conn
+    } do
+      %{board: board, thread: thread} = fixture()
+      token = TokenHash.generate()
+      peer = {10, 42, 31, 7}
+
+      {:ok, view, _html} =
+        conn
+        |> connect_with_session(peer, %{"accela_anon" => token})
+        |> live(thread_path(board, thread))
+
+      context = :sys.get_state(view.pid).socket.assigns.posting_context
+      identity = ClientIp.identity(peer, [])
+
+      assert context.anonymous == %{
+               ip_hash: identity.ip_hash,
+               net_scope: :ipv4_24,
+               net_hash: identity.net_hash,
+               token_hash: TokenHash.hash(token)
+             }
+
+      # A token in the context must not disturb posting...
+      view |> form("#reply-form", post: %{body: "reply with a token"}) |> render_submit()
+
+      # ...and all three identifiers reach the stored row.
+      post = find_post(thread, "reply with a token")
+
+      assert post.poster_hash == identity.ip_hash
+      assert post.net_scope == :ipv4_24
+      assert post.net_hash == identity.net_hash
+      assert post.token_hash == TokenHash.hash(token)
+      refute inspect(post) =~ token
     end
 
     test "creates no post when the comment is blank", %{conn: conn} do

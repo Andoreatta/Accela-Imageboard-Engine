@@ -34,6 +34,17 @@ defmodule AccelaImageboard.ModerationTest do
     |> Ash.read()
   end
 
+  # Ban rows are staff-only in the resource; tests seed them the way an
+  # operator tool would. `poster_hash` doubles as the identifier the ban
+  # targets — its meaning follows `scope`.
+  defp create_ban(staff, attrs) do
+    Ash.create(
+      Ban,
+      Map.merge(%{reason: "spam", expires_at: nil, issued_by_id: staff.id}, attrs),
+      actor: staff
+    )
+  end
+
   describe "audit log attribution (F-12)" do
     test "staff_id is not accepted from params", %{staff: staff} do
       other_staff = create_staff_user()
@@ -179,6 +190,27 @@ defmodule AccelaImageboard.ModerationTest do
 
     test "bans stay staff-only" do
       assert {:error, %Ash.Error.Forbidden{}} = check_bans("x", nil)
+    end
+  end
+
+  describe "ban scope (evasion resistance)" do
+    test "accepts every identifier scope", %{staff: staff} do
+      for scope <- [:exact, :ipv4_24, :ipv6_64, :token] do
+        assert {:ok, ban} = create_ban(staff, %{poster_hash: "hash-for-#{scope}", scope: scope})
+        assert ban.scope == scope
+      end
+    end
+
+    test "defaults to :exact, so old bans keep their meaning", %{staff: staff} do
+      assert {:ok, ban} = create_ban(staff, %{poster_hash: "hash-without-scope"})
+      assert ban.scope == :exact
+    end
+
+    test "rejects an unknown scope", %{staff: staff} do
+      assert {:error, error} =
+               create_ban(staff, %{poster_hash: "hash-with-bad-scope", scope: :wildcard})
+
+      assert String.contains?(Ash.Error.error_descriptions(error), "scope")
     end
   end
 

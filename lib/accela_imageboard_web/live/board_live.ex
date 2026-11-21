@@ -6,8 +6,9 @@ defmodule AccelaImageboardWeb.BoardLive do
   Threads are paginated with a keyset cursor over `(pinned, bumped_at, id)` so the
   pinned tier stays on top while the rest keeps the classic imageboard bump order.
   Starting a thread is the one write this page performs; the anonymous identity is
-  taken from the socket peer data at mount and passed to Ash through the action
-  context, never from form parameters.
+  taken from the connection at mount (peer address plus session token, see
+  `AccelaImageboardWeb.LiveIdentity`) and passed to Ash through the action context,
+  never from form parameters.
 
   A thread is never born empty: the form carries the opening post's body, which
   `Thread.create` accepts as a `:body` argument and stores on the thread's first
@@ -19,24 +20,24 @@ defmodule AccelaImageboardWeb.BoardLive do
   import AccelaImageboardWeb.BoardComponents
 
   alias AccelaImageboard.Boards.Thread
-  alias AccelaImageboardWeb.ClientIp
   alias AccelaImageboardWeb.Content
+  alias AccelaImageboardWeb.LiveIdentity
 
   @impl true
   def mount(%{"slug" => slug}, _session, socket) do
     case Content.board(slug) do
       {:ok, board} ->
         {threads, next_cursor} = Content.threads(board.id)
-        ip_hash = peer_hash(socket)
+        posting_context = LiveIdentity.posting_context(socket)
 
         {:ok,
          socket
          |> assign(:page_title, "/#{board.slug}/ - #{board.name}")
          |> assign(:not_found, false)
          |> assign(:board, board)
-         |> assign(:ip_hash, ip_hash)
+         |> assign(:posting_context, posting_context)
          |> assign(:next_cursor, next_cursor)
-         |> assign(:thread_form, new_thread_form(board, ip_hash))
+         |> assign(:thread_form, new_thread_form(board, posting_context))
          |> stream(:threads, threads)}
 
       {:error, :not_found} ->
@@ -69,9 +70,9 @@ defmodule AccelaImageboardWeb.BoardLive do
   end
 
   def handle_event("create_thread", %{"thread" => params}, socket) do
-    %{board: board, ip_hash: ip_hash} = socket.assigns
+    %{board: board, posting_context: posting_context} = socket.assigns
 
-    if is_nil(ip_hash) do
+    if posting_context == %{} do
       {:noreply,
        put_flash(
          socket,
@@ -94,22 +95,14 @@ defmodule AccelaImageboardWeb.BoardLive do
     end
   end
 
-  defp new_thread_form(board, ip_hash) do
+  defp new_thread_form(board, posting_context) do
     Thread
     |> AshPhoenix.Form.for_create(:create,
       as: "thread",
       params: %{"board_id" => board.id},
-      context: ClientIp.anonymous_context(ip_hash)
+      context: posting_context
     )
     |> to_form()
-  end
-
-  # The poster identity comes from the connection itself (peer address plus, only
-  # when the peer is a trusted proxy, forwarded headers) - never from params.
-  defp peer_hash(socket) do
-    peer_data = get_connect_info(socket, :peer_data)
-    headers = get_connect_info(socket, :x_headers) || []
-    ClientIp.hash(peer_data && peer_data.address, headers)
   end
 
   @impl true

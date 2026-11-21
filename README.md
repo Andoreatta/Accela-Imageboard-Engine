@@ -27,18 +27,26 @@ lib/accela_imageboard/
 
 ### Security model
 
-* **Anonymous identity** — visitors post without accounts; they are
-  identified by `HMAC-SHA256(ip, secret)` (`IP_HASH_SECRET`). Raw IPs are
-  never stored, and the hash is never accepted from user input (anti-spoofing,
-  verified by tests).
+* **Anonymous identity** — visitors post without accounts; they are identified
+  by a set of keyed HMACs (`IP_HASH_SECRET`): the exact per-IP hash, a
+  network-prefix hash (/24 for IPv4, /64 for IPv6) and a hash of a
+  server-issued anonymous session token. Raw IPs are never stored, and no
+  identifier is ever accepted from user input (anti-spoofing, verified by
+  tests).
 * **Authorization** — resource-level Ash policies: public read/create on open
   content, staff-only management (`AccelaImageboard.PolicyChecks.Staff`).
   Parent-state rules use custom checks (`BoardOpen`, `ThreadOpen`) because
   `expr(parent.attr)` cannot be evaluated on create. Internal flows use
   server-side context markers (`ReplyBumpFlow`, `OpPostFlow`, `PostFlowAttach`)
   — client input can never forge them.
-* **Bans** — enforced in the posting flow via `BannedPoster`; **fails closed**
-  (a lookup error denies the post).
+* **Bans** — each ban row targets one identifier (`scope`): the exact IP hash,
+  the network prefix (catches VPN/Tor-range and mobile-IP rotation) or the
+  anonymous session token (catches IP rotation without clearing cookies).
+  Posts store these identifiers, so staff can ban retroactively from content
+  without any raw IP ever existing at rest. Enforcement (`BannedPoster`)
+  matches any active ban against all identifiers the request presents,
+  **fails closed** (a lookup error denies the post), and logs an evasion
+  signal when a block matches only a net/token scope.
 * **Rate limiting** — per-identity buckets via `hammer` (keyset: thread ≥5/10min,
   post ≥20/5min, report ≥10/15min, configurable via `:rate_limits`). One human
   action = exactly one token (an OP burns `thread_create`, never also
@@ -58,7 +66,9 @@ lib/accela_imageboard/
 * `AshAdmin` console is dev-gated **and** behind Basic Auth
   (`:dev_admin_basic_auth`).
 * Poster hashes are pseudonymous identifiers; rotating `IP_HASH_SECRET`
-  invalidates them all — treat that key as production-critical.
+  invalidates them all — treat that key as production-critical. The anonymous
+  session token rides in the signed, httpOnly session cookie; clearing
+  cookies merely rotates one of the three ban identifiers.
 * `post_bump` from replies is post-commit (`after_transaction`): a crash
   between reply and bump can leave ordering stale until the next reply
   (benign; documented in `Boards.Thread`).

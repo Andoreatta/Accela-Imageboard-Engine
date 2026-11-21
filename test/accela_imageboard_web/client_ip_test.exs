@@ -8,6 +8,7 @@ defmodule AccelaImageboardWeb.ClientIpTest do
   use ExUnit.Case, async: false
 
   alias AccelaImageboard.Security.IpHash
+  alias AccelaImageboard.Security.TokenHash
   alias AccelaImageboardWeb.ClientIp
   alias AccelaImageboardWeb.Plugs.RequestContext
 
@@ -193,6 +194,136 @@ defmodule AccelaImageboardWeb.ClientIpTest do
       conn = RequestContext.call(conn_for(@proxy, [{"x-forwarded-for", "198.51.100.7"}]), [])
 
       assert conn.private[:accela_ip_hash] == IpHash.hash(@client)
+    end
+  end
+
+  describe "identity/2" do
+    test "carries the exact hash and the IPv4 network prefix" do
+      identity = ClientIp.identity(@peer, [])
+
+      assert identity.ip_hash == IpHash.hash(@peer)
+      assert identity.net_scope == :ipv4_24
+
+      {scope, net_hash} = IpHash.net(@peer)
+      assert scope == :ipv4_24
+      assert identity.net_hash == net_hash
+    end
+
+    test "the prefix identity survives the last octet changing" do
+      a = ClientIp.identity({203, 0, 113, 7}, [])
+      b = ClientIp.identity({203, 0, 113, 200}, [])
+
+      refute a.ip_hash == b.ip_hash
+      assert a.net_scope == b.net_scope
+      assert a.net_hash == b.net_hash
+    end
+
+    test "a different IPv4 /24 is a different identity" do
+      a = ClientIp.identity({203, 0, 113, 7}, [])
+      b = ClientIp.identity({203, 0, 114, 7}, [])
+
+      refute a.net_hash == b.net_hash
+    end
+
+    test "an IPv6 peer is hashed at /64" do
+      ipv6 = {0x2001, 0x0DB8, 0x0001, 0x0002, 0xDEAD, 0, 0, 1}
+      identity = ClientIp.identity(ipv6, [])
+
+      assert identity.ip_hash == IpHash.hash(ipv6)
+      assert identity.net_scope == :ipv6_64
+      assert {_scope, net_hash} = IpHash.net(ipv6)
+      assert identity.net_hash == net_hash
+    end
+
+    test "an IPv4-mapped peer is identified as the plain IPv4 client" do
+      mapped = {0, 0, 0, 0, 0, 0xFFFF, 203 * 256, 113 * 256 + 7}
+
+      assert ClientIp.identity(mapped, []) == ClientIp.identity({203, 0, 113, 7}, [])
+    end
+
+    test "there is no identity without a peer address" do
+      assert ClientIp.identity(nil, []) == nil
+    end
+
+    test "believes a forwarded header only for a trusted proxy, like hash/2" do
+      trust(["10.0.0.0/8"])
+
+      headers = [{"x-forwarded-for", "1.1.1.1, 198.51.100.7"}]
+
+      assert ClientIp.identity(@proxy, headers) == ClientIp.identity(@client, [])
+      assert ClientIp.identity(@peer, headers) == ClientIp.identity(@peer, [])
+    end
+
+    test "from a connection, it uses the peer and its headers" do
+      trust([])
+
+      assert ClientIp.identity_from_conn(conn_for(@peer)) == ClientIp.identity(@peer, [])
+    end
+  end
+
+  describe "token_hash/1" do
+    test "hashes a session token" do
+      token = TokenHash.generate()
+
+      hash = ClientIp.token_hash(token)
+
+      assert hash == TokenHash.hash(token)
+      assert hash =~ ~r/\A[0-9a-f]{64}\z/
+    end
+
+    test "is nil-safe" do
+      assert ClientIp.token_hash(nil) == nil
+      assert ClientIp.token_hash("") == nil
+      assert ClientIp.token_hash(:not_a_token) == nil
+    end
+
+    test "two tokens hash differently" do
+      refute ClientIp.token_hash(TokenHash.generate()) ==
+               ClientIp.token_hash(TokenHash.generate())
+    end
+  end
+
+  describe "posting_context/2" do
+    test "carries the whole identity when both halves are present" do
+      identity = ClientIp.identity(@peer, [])
+      token_hash = ClientIp.token_hash(TokenHash.generate())
+
+      assert ClientIp.posting_context(identity, token_hash) == %{
+               anonymous: %{
+                 ip_hash: identity.ip_hash,
+                 net_scope: :ipv4_24,
+                 net_hash: identity.net_hash,
+                 token_hash: token_hash
+               }
+             }
+    end
+
+    test "drops the values it does not have" do
+      identity = ClientIp.identity(@peer, [])
+
+      assert ClientIp.posting_context(identity, nil) == %{
+               anonymous: %{
+                 ip_hash: identity.ip_hash,
+                 net_scope: identity.net_scope,
+                 net_hash: identity.net_hash
+               }
+             }
+
+      token_hash = ClientIp.token_hash(TokenHash.generate())
+
+      assert ClientIp.posting_context(nil, token_hash) == %{anonymous: %{token_hash: token_hash}}
+    end
+
+    test "is empty when there is neither an address nor a token" do
+      assert ClientIp.posting_context(nil, nil) == %{}
+    end
+
+    test "never carries a raw token, only its hash" do
+      raw = TokenHash.generate()
+      context = ClientIp.posting_context(ClientIp.identity(@peer, []), ClientIp.token_hash(raw))
+
+      refute inspect(context) =~ raw
+      assert context.anonymous.token_hash == TokenHash.hash(raw)
     end
   end
 end
