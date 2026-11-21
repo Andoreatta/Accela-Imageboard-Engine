@@ -1,0 +1,23 @@
+# .credo — project-level credo configuration.
+# Run `mix credo --strict` manually for the full strict pass; `mix check`
+# uses the quality gate below.
+%{
+  configs: [
+    %{
+      name: "default",
+      files: %{included: ["lib/", "src/", "test/", "web/", "apps/"], excluded: []},
+      strict: false,
+      parse_timeout: 5000,
+      color: true,
+      checks: [
+        # Generated Phoenix code (core components, sandbox setup, auth
+        # overrides) legitimately uses fully-qualified nested module calls;
+        # aliasing them everywhere adds churn without clarity.
+        {Credo.Check.Design.AliasUsage, false},
+
+        # Keep every other check at credo's defaults.
+        {Credo.Check.Readability.ModuleNames, []}
+      ]
+    }
+  ]
+}
