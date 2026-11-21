@@ -8,6 +8,18 @@ defmodule AccelaImageboard.Boards.Thread do
   through `:staff_read` (audit A2). The `posts` relationship and the
   `post_count`/`first_post_id`/`last_post_id` aggregates all ignore moderated
   (soft-deleted) posts (audit A1).
+
+  ## Ordering and pagination
+
+  The thread list of a board is `pinned DESC, bumped_at DESC` (Ash appends the
+  primary key as a stable tiebreaker for the keyset cursor). That is exactly
+  the order of the `(board_id, pinned, bumped_at)` index, which Postgres serves
+  with a single backward index scan for `WHERE board_id = ?`.
+
+  `:read` is keyset paginated (`default_limit: 25`, not countable) and, since
+  pagination is `required?` by Ash's default, always returns a
+  `%Ash.Page.Keyset{}` — an unbounded thread list is impossible. Relationship
+  loads (`board.threads`) are exempt from pagination by Ash.
   """
 
   use Ash.Resource,
@@ -22,6 +34,16 @@ defmodule AccelaImageboard.Boards.Thread do
   postgres do
     table "threads"
     repo AccelaImageboard.Repo
+
+    custom_indexes do
+      # The board thread list: `WHERE board_id = ? ORDER BY pinned DESC,
+      # bumped_at DESC` — served by one backward scan of this index. The
+      # leading `board_id` column also covers "all threads of a board" and the
+      # board foreign key (cascades), so no separate `(board_id)` index is
+      # needed. Pinned threads come first because `pinned = true` sorts after
+      # `false` and the scan is reversed.
+      index([:board_id, :pinned, :bumped_at])
+    end
   end
 
   policies do
@@ -87,10 +109,26 @@ defmodule AccelaImageboard.Boards.Thread do
       primary?(true)
       description("Threads of visible boards — threads of hidden boards excluded")
       filter(expr(board.hidden == false))
+      # The imageboard thread list: pinned first, then most recently bumped.
+      prepare(build(sort: [pinned: :desc, bumped_at: :desc]))
+
+      pagination do
+        keyset?(true)
+        default_limit(25)
+        countable(false)
+      end
     end
 
     read :staff_read do
       description("Every thread, including threads of hidden boards — staff only")
+      prepare(build(sort: [pinned: :desc, bumped_at: :desc]))
+
+      # Staff console: offset pagination with a total count.
+      pagination do
+        offset?(true)
+        default_limit(50)
+        countable(:by_default)
+      end
     end
 
     create :create do

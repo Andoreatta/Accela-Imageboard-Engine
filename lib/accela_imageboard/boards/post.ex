@@ -9,6 +9,16 @@ defmodule AccelaImageboard.Boards.Post do
   primary read, the `Thread.posts` relationship and the thread aggregates —
   filters `is_nil(deleted_at)`, so a moderated post disappears for everyone
   except staff, who reach it through the `:moderation_queue` action.
+
+  ## Pagination
+
+  `:in_thread` uses keyset pagination (`default_limit: 25`, not countable) and
+  `:moderation_queue` offset pagination (`default_limit: 50`, countable by
+  default). Both are `required?` (Ash's default), so a read of these actions
+  always returns a page (`%Ash.Page.Keyset{}` / `%Ash.Page.Offset{}`) and can
+  never stream a thread's entire history. The primary `:read` — used by
+  `Ash.get/3`, relationship loads and policy checks — is deliberately *not*
+  paginated.
   """
 
   use Ash.Resource,
@@ -26,6 +36,19 @@ defmodule AccelaImageboard.Boards.Post do
 
     references do
       reference :thread, on_delete: :delete
+    end
+
+    custom_indexes do
+      # The reads that matter: "posts of a thread, oldest first"
+      # (`WHERE thread_id = ? ORDER BY id`, see `:in_thread`) and the
+      # foreign-key cascade when a thread is deleted. The leading `thread_id`
+      # column also serves lookups/counts that filter on the thread alone, so
+      # no separate single-column index is needed.
+      #
+      # `posts` has no `inserted_at` column (adding one needs a migration and
+      # would backfill every row with the migration time), and ids are uuid_v7
+      # — i.e. time ordered — so `id` is the insertion-order key to sort on.
+      index([:thread_id, :id])
     end
   end
 
@@ -92,11 +115,29 @@ defmodule AccelaImageboard.Boards.Post do
       # Posts carry no timestamp in this schema; ids are uuid_v7, i.e. time
       # ordered, so they are the insertion order.
       prepare(build(sort: [id: :asc]))
+
+      # A thread can hold thousands of posts: keyset (not offset) pagination,
+      # so a deep page costs the same as the first one. With Ash's defaults
+      # (`required?: true`) a plain read of this action is paginated too, so an
+      # unbounded read is impossible; `countable false` avoids a COUNT per page.
+      pagination do
+        keyset?(true)
+        default_limit(25)
+        countable(false)
+      end
     end
 
     read :moderation_queue do
       description("Every post including moderated ones, newest first — staff only")
       prepare(build(sort: [id: :desc]))
+
+      # Staff console: offset pagination with a total count (small, triaged
+      # working set — deep pages are not a performance concern here).
+      pagination do
+        offset?(true)
+        default_limit(50)
+        countable(:by_default)
+      end
     end
 
     create :create do

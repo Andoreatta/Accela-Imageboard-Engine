@@ -45,7 +45,11 @@ defmodule AccelaImageboard.BoardsTest do
     end
   end
 
-  defp ids(result), do: Enum.map(result, & &1.id)
+  # Public list actions are paginated (see `pagination_test.exs`), so a read
+  # may come back as a plain list or as a page: accept both, and only look at
+  # the rows.
+  defp ids(%{results: results}), do: Enum.map(results, & &1.id)
+  defp ids(records) when is_list(records), do: Enum.map(records, & &1.id)
 
   describe "anonymous posting" do
     test "is allowed on open threads", %{thread: thread, anon: anon} do

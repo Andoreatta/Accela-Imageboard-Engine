@@ -3,6 +3,18 @@ config :accela_imageboard, token_signing_secret: "8PWH5BW5QuusN3r0tl3LOUqy8VIg3a
 config :bcrypt_elixir, log_rounds: 1
 config :ash, disable_async?: true
 
+# Oban in tests: `:manual` disables queues, plugins, the stager and peers, so no
+# job ever runs behind a test's back, while `Oban.Testing` assertions
+# (`assert_enqueued/1`) still work against the database.
+#
+# `:manual` also makes Oban verify at boot that the `oban_jobs` tables are
+# migrated (it raises otherwise), which they are: `priv/repo/migrations/
+# *_add_oban_jobs.exs` runs as part of the `test` alias' `ash.setup`.
+config :accela_imageboard, Oban,
+  testing: :manual,
+  queues: false,
+  plugins: false
+
 # Configure your database
 #
 # The MIX_TEST_PARTITION environment variable can be used

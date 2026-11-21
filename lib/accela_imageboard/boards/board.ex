@@ -9,6 +9,13 @@ defmodule AccelaImageboard.Boards.Board do
   `board.threads` goes through the Thread primary read, so a staff console
   lists the threads of a hidden board with
   `Thread |> Ash.Query.filter(board_id == ^board.id) |> Ash.read(action: :staff_read, actor: staff)`.
+
+  ## Pagination
+
+  `:read` and `:list_public` are keyset paginated (`default_limit: 25`, not
+  countable) and therefore always return an `%Ash.Page.Keyset{}`; `:staff_read`
+  is offset paginated (`default_limit: 50`, countable by default). So the public board
+  index can never be read unbounded, and a page costs no COUNT query.
   """
 
   use Ash.Resource,
@@ -58,7 +65,11 @@ defmodule AccelaImageboard.Boards.Board do
 
   relationships do
     has_many :threads, AccelaImageboard.Boards.Thread do
-      sort(inserted_at: :desc)
+      description(
+        "Threads of this board in imageboard order (relationship loads are not paginated)"
+      )
+
+      sort(pinned: :desc, bumped_at: :desc)
     end
   end
 
@@ -67,17 +78,39 @@ defmodule AccelaImageboard.Boards.Board do
       primary?(true)
       description("Boards visible to anonymous visitors — hidden boards excluded")
       filter(expr(hidden == false))
+      prepare(build(sort: [slug: :asc]))
+
+      # Keyset pagination (bounded, no COUNT): the board index of a large
+      # installation can grow, and `slug` is unique so the cursor is stable.
+      pagination do
+        keyset?(true)
+        default_limit(25)
+        countable(false)
+      end
     end
 
     read :list_public do
       description("Boards visible to anonymous visitors")
       filter(expr(hidden == false))
       prepare(build(sort: [slug: :asc]))
+
+      pagination do
+        keyset?(true)
+        default_limit(25)
+        countable(false)
+      end
     end
 
     read :staff_read do
       description("Every board, including hidden ones — staff only")
       prepare(build(sort: [slug: :asc]))
+
+      # Staff console: offset pagination with a total count.
+      pagination do
+        offset?(true)
+        default_limit(50)
+        countable(:by_default)
+      end
     end
 
     create :create do

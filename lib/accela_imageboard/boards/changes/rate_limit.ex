@@ -27,9 +27,15 @@ defmodule AccelaImageboard.Boards.Changes.RateLimit do
   def change(changeset, opts, _context) do
     Ash.Changeset.before_action(changeset, fn changeset ->
       subject =
-        get_in(changeset.context, [:anonymous, :ip_hash]) ||
-          (changeset.data && changeset.data.id && to_string(changeset.data.id)) ||
-          "unknown"
+        case get_in(changeset.context, [:anonymous, :ip_hash]) do
+          # The only accepted identity shape: the keyed hash binary produced by
+          # `AccelaImageboard.Security.IpHash` (see `SetPosterHash`).
+          hash when is_binary(hash) and byte_size(hash) > 0 ->
+            hash
+
+          _missing ->
+            (changeset.data && changeset.data.id && to_string(changeset.data.id)) || "unknown"
+        end
 
       case AccelaImageboard.RateLimits.allowed?(opts[:key], subject) do
         {:allow, _count} ->

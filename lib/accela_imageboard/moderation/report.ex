@@ -19,6 +19,13 @@ defmodule AccelaImageboard.Moderation.Report do
   postgres do
     table "reports"
     repo AccelaImageboard.Repo
+
+    custom_indexes do
+      # "all reports for this post" (post moderation view) …
+      index([:post_id])
+      # … and the staff triage queue, which lists by state.
+      index([:state])
+    end
   end
 
   policies do

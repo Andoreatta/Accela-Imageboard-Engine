@@ -5,6 +5,11 @@ defmodule AccelaImageboard.Boards.Checks.ThreadOpen do
   A policy like `expr(thread.locked == false)` cannot be evaluated on create
   (the parent relationship is not loaded on the new record), so this check
   looks the thread up explicitly.
+
+  The lookup is a plain read with `authorize?: false` (it is a machine check
+  inside the posting flow, not a user read), so it must cope with the thread
+  read action being paginated: a match may come back as a page. Anything other
+  than exactly one confirmed open, visible thread denies — fail closed.
   """
 
   use Ash.Policy.SimpleCheck
@@ -41,9 +46,11 @@ defmodule AccelaImageboard.Boards.Checks.ThreadOpen do
       )
     )
     |> Ash.read(authorize?: false)
-    |> case do
-      {:ok, [_thread]} -> true
-      _ -> false
-    end
+    |> single_result?()
   end
+
+  # Paginated actions return `{:ok, %Ash.Page{}}`; unpaginated ones a list.
+  defp single_result?({:ok, %{results: [_one]}}), do: true
+  defp single_result?({:ok, [_one]}), do: true
+  defp single_result?(_no_match_or_error), do: false
 end

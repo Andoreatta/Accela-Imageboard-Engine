@@ -26,9 +26,12 @@ defmodule AccelaImageboardWeb.Endpoint do
     secure: Application.compile_env(:accela_imageboard, :session_cookie_secure, true)
   ]
 
+  # `:peer_data` (the connection's address) and `:x_headers` (only believed when the
+  # peer is a trusted proxy, see AccelaImageboardWeb.ClientIp) let a LiveView compute
+  # the anonymous poster identity at mount without trusting anything from params.
   socket "/live", Phoenix.LiveView.Socket,
-    websocket: [connect_info: [session: @session_options]],
-    longpoll: [connect_info: [session: @session_options]]
+    websocket: [connect_info: [:peer_data, :x_headers, session: @session_options]],
+    longpoll: [connect_info: [:peer_data, :x_headers, session: @session_options]]
 
   # Serve at "/" the static files from "priv/static" directory.
   #
@@ -58,9 +61,16 @@ defmodule AccelaImageboardWeb.Endpoint do
   plug Plug.RequestId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
 
+  # Regular form posts are tiny (a reply body is at most 10 kB), and image uploads
+  # do not travel through this parser at all: LiveView sends them over its own
+  # upload endpoint, so `allow_upload(max_file_size:)` and
+  # `AccelaImageboard.Media.Validation` are what bound an upload. Keeping the global
+  # body limit small means an attacker cannot make every route buffer megabytes
+  # (audit F15).
   plug Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
     pass: ["*/*"],
+    length: 1_000_000,
     json_decoder: Phoenix.json_library()
 
   plug Plug.MethodOverride

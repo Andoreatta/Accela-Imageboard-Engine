@@ -35,38 +35,44 @@ defmodule AccelaImageboardWeb.Layouts do
 
   def app(assigns) do
     ~H"""
-    <header class="navbar px-4 sm:px-6 lg:px-8">
-      <div class="flex-1">
-        <a href="/" class="flex-1 flex w-fit items-center gap-2">
-          <img src={~p"/images/logo.svg"} width="36" />
-          <span class="text-sm font-semibold">v{Application.spec(:phoenix, :vsn)}</span>
-        </a>
-      </div>
-      <div class="flex-none">
-        <ul class="flex px-1 space-x-4 items-center">
-          <li>
-            <a href="https://phoenixframework.org/" class="btn btn-ghost">Website</a>
-          </li>
-          <li>
-            <a href="https://github.com/phoenixframework/phoenix" class="btn btn-ghost">GitHub</a>
-          </li>
-          <li>
-            <.theme_toggle />
-          </li>
-          <li>
-            <a href="https://phoenix.hexdocs.pm/overview.html" class="btn btn-primary">
-              Get Started <span aria-hidden="true">&rarr;</span>
-            </a>
-          </li>
-        </ul>
+    <header class="sticky top-0 z-20 border-b border-base-300 bg-base-100/85 backdrop-blur">
+      <div class="mx-auto flex w-full max-w-5xl items-center gap-3 px-4 py-3 sm:px-6">
+        <.link navigate={~p"/"} class="flex items-baseline gap-2">
+          <span class="text-lg font-black tracking-tight">Accela</span>
+          <span class="hidden text-[0.65rem] font-semibold uppercase tracking-[0.25em] text-base-content/40 sm:inline">
+            imageboard
+          </span>
+        </.link>
+
+        <nav class="flex flex-1 items-center gap-1 text-sm">
+          <.link
+            navigate={~p"/"}
+            class="rounded-lg px-3 py-1.5 font-medium text-base-content/60 transition hover:bg-base-200 hover:text-base-content"
+          >
+            Boards
+          </.link>
+        </nav>
+
+        <div class="flex items-center gap-2">
+          <.theme_toggle />
+          <.link
+            navigate={~p"/sign-in"}
+            class="rounded-lg px-3 py-1.5 text-sm font-medium text-base-content/50 transition hover:bg-base-200 hover:text-base-content"
+          >
+            Staff
+          </.link>
+        </div>
       </div>
     </header>
 
-    <main class="px-4 py-20 sm:px-6 lg:px-8">
-      <div class="mx-auto max-w-2xl space-y-4">
-        {render_slot(@inner_block)}
-      </div>
+    <main class="mx-auto w-full max-w-5xl px-4 py-8 sm:px-6">
+      {render_slot(@inner_block)}
     </main>
+
+    <footer class="mx-auto w-full max-w-5xl px-4 pb-10 text-xs leading-relaxed text-base-content/40 sm:px-6">
+      Anonymous by design: your poster identity is a keyed hash of your IP address.
+      Raw addresses are never stored or logged.
+    </footer>
 
     <.flash_group flash={@flash} />
     """

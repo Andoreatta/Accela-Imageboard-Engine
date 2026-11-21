@@ -22,6 +22,23 @@ config :accela_imageboard,
   generators: [timestamp_type: :utc_datetime],
   ash_domains: [AccelaImageboard.Accounts, AccelaImageboard.Boards, AccelaImageboard.Moderation]
 
+# Background jobs (Oban, `Oban.Engines.Basic`, Postgres-backed).
+#
+# Started in the supervision tree after the repo it writes through, see
+# `AccelaImageboard.Application`. No jobs are defined yet — AshOban is not
+# applied to any resource — but the engine, its queues and its migration are in
+# place so a worker only has to be added and enqueued:
+#
+#   * `media`   — image post-processing (thumbnails, metadata stripping)
+#   * `default` — AshOban's queue and everything else
+#
+# `testing: :manual` in config/test.exs turns queues, plugins and the stager off
+# so no job runs behind a test's back.
+config :accela_imageboard, Oban,
+  engine: Oban.Engines.Basic,
+  repo: AccelaImageboard.Repo,
+  queues: [default: 10, media: 5]
+
 # Configure the endpoint
 config :accela_imageboard, AccelaImageboardWeb.Endpoint,
   url: [host: "localhost"],

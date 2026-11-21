@@ -5,8 +5,21 @@ defmodule AccelaImageboard.Boards.Media do
   Upload files never go through `Plug.Upload` straight to disk: the web layer
   validates magic bytes, size and type before handing a `storage_key` over
   (see `AccelaImageboard.Media.Storage`). The file is served through a
-  controller — never statically — so that correct headers (nosniff,
+  controller - never statically - so that correct headers (nosniff,
   content-type allow-list, cache) are always applied.
+
+  ## Attaching
+
+  `:attach` is deliberately **not** a public create action. It is authorized by
+  `AccelaImageboard.Media.Checks.PostFlowAttach`, which requires the server-side
+  `media_upload: %{post_flow: true}` marker *and* a visible post inside an open
+  thread, so media can only appear as part of creating a reply. Staff keep their
+  own branch. A direct call without the marker fails closed.
+
+  The `:sha256` identity makes content-addressed deduplication possible: uploading
+  the same bytes twice updates the existing row (its `post_id` moves to the newest
+  post) instead of storing a second copy. Deduplicating *across* posts would need a
+  join table; see the operations notes.
   """
 
   use Ash.Resource,
@@ -21,12 +34,19 @@ defmodule AccelaImageboard.Boards.Media do
 
   policies do
     policy action_type(:read) do
+      description("Images are public content of public posts")
       authorize_if(always())
     end
 
-    policy action([:attach, :detach]) do
-      # The web layer attaches media as part of the (authorized) post flow;
-      # no direct anonymous access to this resource.
+    policy action(:attach) do
+      description("Attaching media happens only inside the anonymous post flow")
+
+      authorize_if(AccelaImageboard.Media.Checks.PostFlowAttach)
+      authorize_if(AccelaImageboard.PolicyChecks.Staff)
+    end
+
+    policy action(:detach) do
+      description("Removing an attachment is staff-only")
       authorize_if(AccelaImageboard.PolicyChecks.Staff)
     end
   end

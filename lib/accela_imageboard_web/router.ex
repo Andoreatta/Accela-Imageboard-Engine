@@ -3,6 +3,9 @@ defmodule AccelaImageboardWeb.Router do
 
   use AshAuthentication.Phoenix.Router
 
+  # The CSP is set by `AccelaImageboardWeb.Plugs.SecureHeaders` from configuration
+  # (not inline here), which is what sobelow's static check looks for.
+  # sobelow_skip ["Config.CSP"]
   pipeline :browser do
     plug :accepts, ["html"]
     plug :fetch_session
@@ -20,6 +23,19 @@ defmodule AccelaImageboardWeb.Router do
     plug :accepts, ["json"]
     plug :load_from_bearer
     plug :set_scope, scope: AccelaImageboard.Accounts.Scope, default_scope?: true
+  end
+
+  # Uploaded images only need the security headers: no session, no HTML
+  # negotiation (an <img> request may send `Accept: image/webp`, which the browser
+  # pipeline's `:accepts, ["html"]` would reject).
+  pipeline :media do
+    plug AccelaImageboardWeb.Plugs.SecureHeaders
+  end
+
+  scope "/", AccelaImageboardWeb do
+    pipe_through :media
+
+    get "/media/:id", MediaController, :show
   end
 
   scope "/", AccelaImageboardWeb do
@@ -44,7 +60,11 @@ defmodule AccelaImageboardWeb.Router do
   scope "/", AccelaImageboardWeb do
     pipe_through :browser
 
-    get "/", PageController, :home
+    # The imageboard itself: board index, one board, one thread.
+    live "/", BoardIndexLive
+    live "/b/:slug", BoardLive
+    live "/b/:slug/t/:thread_id", ThreadLive
+
     auth_routes AuthController, AccelaImageboard.Accounts.User, path: "/auth"
 
     sign_out_route AuthController, "/sign-out",

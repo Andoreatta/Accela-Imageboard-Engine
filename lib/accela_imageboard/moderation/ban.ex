@@ -18,6 +18,13 @@ defmodule AccelaImageboard.Moderation.Ban do
   postgres do
     table "bans"
     repo AccelaImageboard.Repo
+
+    custom_indexes do
+      # Every ban check is "is this poster_hash banned and not expired?" (the
+      # `:check` action and the posting flow's fail-closed lookup). The leading
+      # column also covers lookups by poster_hash alone.
+      index([:poster_hash, :expires_at])
+    end
   end
 
   policies do

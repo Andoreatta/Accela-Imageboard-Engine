@@ -10,6 +10,10 @@ defmodule AccelaImageboard.Application do
     children = [
       AccelaImageboardWeb.Telemetry,
       AccelaImageboard.Repo,
+      # Background jobs (media post-processing, AshOban). Must start after the
+      # repo it writes through. In test `testing: :manual` disables queues,
+      # plugins, the stager and peers, so nothing runs unless a test drains it.
+      {Oban, Application.fetch_env!(:accela_imageboard, Oban)},
       {DNSCluster, query: Application.get_env(:accela_imageboard, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: AccelaImageboard.PubSub},
       # Anonymous-post rate limiting (ETS-backed, keyed by hashed IP)
