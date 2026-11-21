@@ -1,5 +1,157 @@
 This is a web application written using the Phoenix web framework.
 
+> Accela-specific rules below TAKE PRECEDENCE over generic guidance where
+> they conflict. The trust model and security invariants are hard rules: an
+> agent that breaks one has introduced a vulnerability, not a style issue.
+
+## Accela: project, trust model & non-negotiables
+
+Anonymous-first imageboard: **Ash 3.37 domains** (Accounts = staff auth,
+Boards = public content, Moderation = staff-only) + **Phoenix 1.8 /
+LiveView 1.2** rendering, **Elixir 1.20** with the **native gradual type
+checker** active on every compile (this is our static analysis baseline — do
+not disable or weaken `type_check` config), PostgreSQL via AshPostgres,
+Oban jobs, Hammer (ETS) rate limiting.
+
+Trust boundary:
+
+- **Anonymous visitors** may read all visible content and create posts /
+  threads / media / reports on open boards and threads. Their only identity
+  is the server-computed `poster_hash` — an HMAC of their IP. They have an
+  IP-derived rate-limit bucket and can be banned by hash.
+- **Staff accounts** (AshAuthentication, password) hold `is_staff: true`
+  and get moderate/ban/lift/hide/lock/lock/archive powers plus
+  `authorize?: false` staff-only read actions where the primary read
+  filters make staff views impossible.
+- Everything crosses the boundary through **Ash policies** — the LiveView
+  layer never contains authorization logic of its own.
+
+### Docs-first mandate (HARD RULE)
+
+Before writing or approving code that uses a framework feature — an Ash
+DSL section, a policy construct, a LiveView API, a Phoenix.PubSub option,
+anything Oban — **consult the documentation of the exact installed
+version**, not memory:
+
+- Offline, always available: `deps/<package>/documentation/**`
+  (e.g. `deps/ash/documentation/dsls/DSL-Ash.Notifier.PubSub.md`,
+  `deps/ash/documentation/topics/pagination.livemd`,
+  `deps/ash/documentation/topics/monitoring.md`, AshPostgres, Oban docs).
+- Hexdocs mirrors the published version; prefer the vendored
+  `deps/` docs when in doubt since they match the lockfile exactly.
+- When a doc page contradicts a pattern already in this codebase, trust the
+  doc, then update both the code and this file.
+- Cite the doc path in PR/commit descriptions for framework-behaviour
+  decisions (our past three audits caught real bugs from misremembered
+  Ash semantics — e.g. `expr(parent.attr)` cannot filter on `:create`,
+  which is why `changes/checks/*` custom checks exist).
+
+### Security invariants (HARD RULES — failing one is a vuln, not a nit)
+
+1. **Anonymous identity is server-only.** `poster_hash` comes from
+   `conn.private[:accela_ip_hash]` (`RequestContext`/`ClientIp`) and is passed
+   to the domain as `context: %{anonymous: %{ip_hash: hash}}`. It is **never**
+   read from params, forms, or any client-controlled input. Any code path
+   where a client can set a poster identity is a critical bug.
+2. **No `authorize?: false` in product code.** Tests, seeds and fixture
+   helpers may use it; `lib/**` and `lib/**_web/**` may not. Staff-only reads
+   are separate actions (`:staff_read`, `:moderation_queue`) gated by policy,
+   not read bypasses.
+3. **Server-side flow markers are unforgeable.** Internal machine flows
+   (`ReplyBumpFlow`, `OpPostFlow`, `PostFlowAttach`, `posting_flow` context)
+   must only ever be set by server code after its own checks. If you find
+   yourself accepting a marker value from input, stop — that is the exploit.
+4. **Fail closed.** Bans (`BannedPoster`), parent-state checks
+   (`BoardOpen`/`ThreadOpen`), media attach (`PostFlowAttach`) and
+   `:dev_admin_basic_auth` deny on lookup error, malformed input or missing
+   config. Never "fail open for convenience".
+5. **No raw IP persistence.** IPs are hashed with `IP_HASH_SECRET`
+   (`security/ip_hash.ex`, daily rotation `hash_salt` comp). Never log, store
+   or assign a raw client IP beyond request scope. The hash goes in
+   `conn.private`, not `conn.assigns` (keeps it out of templates).
+6. **Scope = what the visitor can read.** Read policies filter
+   (`hidden == false`, `is_nil(deleted_at)`); LiveViews and any future
+   websocket/PubSub topics must only ever expose content the same visitor
+   could `Ash.read`. Hidden boards and moderated posts must never leak
+   through a topic or a stream.
+7. **Pagination on every public read.** All public list actions are paginated
+   (keyset, 25/page). Any new read action must specify pagination or a
+   documented bounded limit — unbounded reads are review-blockers.
+8. **Rate-limit bucket accounting: one human action = exactly one token.**
+   Nested machine writes (OP creation, media attach inside post create)
+   must not double-charge the visitor. New action → update
+   `test/rate_limit_test.exs` expectations.
+9. **Secrets & env at runtime.** Secrets come from env vars read at runtime
+   (`Application.fetch_env!/fetch_env` in `config/runtime.exs`, validated
+   non-empty by `require_env`). Never bake secrets into `config/*.exs`
+   compile-time, and **never call `Mix.env/0` inside `lib/**`** — it crashes
+   in releases. Config-driven behaviour over flag checks (`SecureHeaders`,
+   `session_cookie_secure` are the templates to copy).
+10. **Uploads & rendering.** Media is validated by magic bytes (never trust
+    declared type/extension), stored under random keys with
+    traversal-proof path checks, and served with correct `Content-Type`,
+    `nosniff`, and immutable caching. HEEx auto-escaping is the only HTML
+    sink; `raw`/`safe` is forbidden on any user content.
+11. **TDD + gate.** Write the failing test first, then implement, then run
+    `mix check` (format → compile --warnings-as-errors → credo → sobelow →
+    doctor → tests) and keep it **fully green**. `mix ash.codegen` + review
+    for migrations — never hand-write Ash migrations. Commit messages are in
+    **English**.
+
+### Performance rules
+
+- **Keyset pagination** on public reads (already on threads/posts/boards);
+  offset is fine for staff queues (`:staff_read`). Sort orders match
+  composite indexes (`threads(Board, pinned, bumped_at)` etc. — see
+  `priv/repo/migrations/*hot_paths*` and `audits/pagination-and-jobs-notes.md`
+  for the EXPLAIN session).
+- **No N+1.** Load relationships/aggregates explicitly through the
+  read actions; `load/2` hearts on the page spec, not template-access
+  discovery.
+- **`after_transaction` over `after_action`** when a side-effect must not
+  roll back the parent write (the bump lesson: a failing nested write
+  inside `after_action` deletes the enclosing record).
+- **Hammer is ETS = per-node.** Every rate-limit design must state what
+  happens with N nodes (today: each node has its own buckets — acceptable,
+  but must be reconsidered before any multi-node deploy).
+- **Oban for slow work** (thumbnails, emails); media queue pre-sized at 5.
+  No long-running work in the request process.
+
+### Real-time / websocket security & performance rules (Phase 4 and beyond)
+
+- **Notification source is `Ash.Notifier.PubSub`** — declared on the
+  resource (`notifiers: [Ash.Notifier.PubSub]`, `module: AccelaImageboardWeb.Endpoint`,
+  matching `broadcast_type :phoenix_broadcast`). Do not hand-roll
+  `Endpoint.broadcast/3` calls from domains; the notifier owns the topic
+  contract. Debug with `config :ash, :pub_sub, debug?: true`.
+  Docs: `deps/ash/documentation/dsls/DSL-Ash.Notifier.PubSub.md`.
+- **Topic naming**: `thread:{thread_id}` for new posts, `board:{slug}` for
+  bump/ordering changes. Topics are world-readable by design — they must
+  carry only content already allowed by rule 6, and event payloads keep to
+  ids/summary, never full records.
+- **Subscribe in `on_mount` / `handle_params` AFTER the access check
+  succeeds.** Never subscribe before the visibility check for the page has
+  passed; a subscription is an implicit read grant.
+- **Treat notifications as refresh hints, not as data.** On event, a
+  subscribed LiveView re-reads via the authorized domain action (Ash read
+  with its filters/policies) and reconciles — broadcasts are untrusted
+  order-of-arrival hints; the DB is the source of truth. Never trust a
+  broadcast payload as record content.
+- **LiveView `stream/3` for collections** (append/prepend/`reset: true`,
+  `stream_delete` for moderation removals) with `phx-update="stream"` and
+  DOM ids per item; streams sidestep re-rendering the whole list on every
+  event (see LiveView streams rules below).
+- **Ban eviction**: on ban, broadcast a disconnect/dismiss to affected
+  topics so banned sessions stop receiving live content; the ban check must
+  also run on the next write (it does — `BannedPoster`), so eviction is UX,
+  not the enforcement.
+- **CSP already enforces `connect-src 'self'`** — websockets are same-origin
+  only. Do not loosen it (dev relaxation lives only in `config/dev.exs`).
+- **Multi-node**: `Phoenix.PubSub` default PG backend broadcasts cluster-wide;
+  Ash notifiers are fine with that, but rate limiting (Hammer) and
+  upload storage (`:uploads_dir`, local disk) are not multi-node ready — see
+  performance rules. Flag any change that assumes a single node.
+
 ## Project guidelines
 
 - Use `mix precommit` alias when you are done with all changes and fix any pending issues
