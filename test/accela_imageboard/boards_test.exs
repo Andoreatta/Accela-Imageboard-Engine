@@ -165,6 +165,9 @@ defmodule AccelaImageboard.BoardsTest do
       {:ok, visible} = create_post(thread, context: anon, body: "keep me")
       {:ok, removed} = create_post(thread, context: anon, body: "remove me")
 
+      # The thread's opening post, created with the thread itself.
+      op = thread |> Ash.load!(:posts, actor: nil) |> Map.fetch!(:posts) |> hd()
+
       {:ok, moderated} = Ash.update(removed, %{}, action: :moderate, actor: staff)
       assert moderated.deleted_at
 
@@ -181,25 +184,27 @@ defmodule AccelaImageboard.BoardsTest do
       # 3. a single moderated post cannot be fetched
       assert refute_readable(Ash.get(Boards.Post, moderated.id, actor: nil))
 
-      # 4. the thread aggregates
+      # 4. the thread aggregates: the OP and the visible reply, not the moderated one
       reloaded = Ash.load!(thread, [:post_count, :first_post_id, :last_post_id], actor: nil)
-      assert reloaded.post_count == 1
-      assert reloaded.first_post_id == visible.id
+      assert reloaded.post_count == 2
+      assert reloaded.first_post_id == op.id
       assert reloaded.last_post_id == visible.id
     end
 
-    test "do not count towards aggregates when they are the only posts", %{
+    test "do not count towards aggregates when they are the only replies", %{
       thread: thread,
       staff: staff,
       anon: anon
     } do
+      op = thread |> Ash.load!(:posts, actor: nil) |> Map.fetch!(:posts) |> hd()
+
       {:ok, post} = create_post(thread, context: anon)
       {:ok, _moderated} = Ash.update(post, %{}, action: :moderate, actor: staff)
 
       reloaded = Ash.load!(thread, [:post_count, :first_post_id, :last_post_id], actor: nil)
-      assert reloaded.post_count == 0
-      assert is_nil(reloaded.first_post_id)
-      assert is_nil(reloaded.last_post_id)
+      assert reloaded.post_count == 1
+      assert reloaded.first_post_id == op.id
+      assert reloaded.last_post_id == op.id
     end
 
     test "are readable by staff through the moderation queue", %{

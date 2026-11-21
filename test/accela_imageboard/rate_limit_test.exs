@@ -16,7 +16,7 @@ defmodule AccelaImageboard.RateLimitTest do
       Ash.create(Boards.Board, %{slug: "rl#{uniq}", name: "Rate Limit"}, authorize?: false)
 
     {:ok, thread} =
-      Ash.create(Boards.Thread, %{board_id: board.id, subject: "OP"},
+      Ash.create(Boards.Thread, %{board_id: board.id, subject: "OP", body: "opening post"},
         context: %{anonymous: %{ip_hash: "rl-op-#{uniq}"}},
         authorize?: false
       )

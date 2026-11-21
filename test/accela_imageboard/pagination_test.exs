@@ -149,7 +149,9 @@ defmodule AccelaImageboard.PaginationTest do
   describe "posts of a thread" do
     test "are keyset paginated oldest first" do
       thread = create_thread(create_board())
-      posts = create_posts(thread, 30)
+      # `create_thread` already stored the thread's opening post.
+      op = thread |> Ash.load!(:posts, actor: nil) |> Map.fetch!(:posts) |> hd()
+      posts = [op | create_posts(thread, 30)]
 
       page =
         Boards.Post
@@ -171,7 +173,7 @@ defmodule AccelaImageboard.PaginationTest do
           page: [after: keyset_of(List.last(page.results))]
         )
 
-      assert length(rest.results) == 5
+      assert length(rest.results) == 6
       refute rest.more?
       assert Enum.map(rest.results, & &1.id) == Enum.map(Enum.drop(posts, 25), & &1.id)
     end
@@ -188,7 +190,8 @@ defmodule AccelaImageboard.PaginationTest do
 
       assert %Ash.Page.Offset{} = page
       assert length(page.results) == 2
-      assert page.count == 3
+      # The thread's opening post plus the three replies.
+      assert page.count == 4
       assert page.more?
     end
   end

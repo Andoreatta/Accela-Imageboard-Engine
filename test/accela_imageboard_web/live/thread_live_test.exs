@@ -114,6 +114,21 @@ defmodule AccelaImageboardWeb.ThreadLiveTest do
       assert has_element?(view, "#posts-#{post.id}")
     end
 
+    test "a reply moves its thread back to the top of the board", %{conn: conn} do
+      board = create_board(slug: "tech")
+      older = create_thread(board, subject: "Older thread", body: "older op")
+      _newer = create_thread(board, subject: "Newer thread", body: "newer op")
+
+      {:ok, _board_view, before_html} = live(unique_conn(conn, 25), "/b/#{board.slug}")
+      assert position(before_html, "Newer thread") < position(before_html, "Older thread")
+
+      {:ok, view, _html} = live(unique_conn(conn, 26), thread_path(board, older))
+      view |> form("#reply-form", post: %{body: "bump me"}) |> render_submit()
+
+      {:ok, _bumped_view, after_html} = live(unique_conn(conn, 27), "/b/#{board.slug}")
+      assert position(after_html, "Older thread") < position(after_html, "Newer thread")
+    end
+
     test "ignores a poster hash smuggled in through the params", %{conn: conn} do
       conn = unique_conn(conn, 18)
       %{board: board, thread: thread} = fixture()
@@ -273,8 +288,8 @@ defmodule AccelaImageboardWeb.ThreadLiveTest do
 
   defp fixture do
     board = create_board(slug: "tech", name: "Technology")
-    thread = create_thread(board, subject: "A thread")
-    {:ok, op} = create_post(thread, body: "Opening post")
+    thread = create_thread(board, subject: "A thread", body: "Opening post")
+    [op] = posts_of(thread)
 
     %{board: board, thread: thread, op: op}
   end

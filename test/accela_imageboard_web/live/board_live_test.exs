@@ -94,14 +94,16 @@ defmodule AccelaImageboardWeb.BoardLiveTest do
   end
 
   describe "starting a thread" do
-    test "creates the thread and navigates to it", %{conn: conn} do
+    test "creates the thread with its opening post and navigates to it", %{conn: conn} do
       board = create_board(slug: "tech")
 
       {:ok, view, _html} = live(unique_conn(conn, 7), "/b/#{board.slug}")
 
+      assert has_element?(view, "#new-thread-form textarea[name='thread[body]']")
+
       assert {:error, {:live_redirect, %{to: to}}} =
                view
-               |> form("#new-thread-form", thread: %{subject: "Opening subject"})
+               |> form("#new-thread-form", thread: %{subject: "Opening subject", body: "First!"})
                |> render_submit()
 
       assert to =~ "/b/#{board.slug}/t/"
@@ -110,6 +112,29 @@ defmodule AccelaImageboardWeb.BoardLiveTest do
       assert {:ok, thread} = Content.thread(board.id, thread_id)
       assert thread.subject == "Opening subject"
       assert thread.board_id == board.id
+
+      # The OP is part of the thread creation: a thread is never born empty.
+      {posts, _cursor} = Content.posts(thread.id)
+      assert [op] = posts
+      assert op.body == "First!"
+      assert op.thread_id == thread.id
+      assert thread.first_post_id == op.id
+      assert thread.post_count == 1
+    end
+
+    test "requires an opening post, like the reply form requires a comment", %{conn: conn} do
+      board = create_board(slug: "tech")
+
+      {:ok, view, _html} = live(unique_conn(conn, 11), "/b/#{board.slug}")
+
+      html =
+        view
+        |> form("#new-thread-form", thread: %{subject: "No body", body: ""})
+        |> render_submit()
+
+      assert has_element?(view, "#new-thread-form")
+      assert html =~ "required"
+      assert {[], _cursor} = Content.threads(board.id)
     end
 
     test "accepts a thread with no subject and keeps it untitled", %{conn: conn} do
@@ -119,7 +144,7 @@ defmodule AccelaImageboardWeb.BoardLiveTest do
 
       assert {:error, {:live_redirect, %{to: to}}} =
                view
-               |> form("#new-thread-form", thread: %{subject: ""})
+               |> form("#new-thread-form", thread: %{subject: "", body: "Only the body"})
                |> render_submit()
 
       thread_id = to |> String.split("/") |> List.last()
@@ -128,6 +153,7 @@ defmodule AccelaImageboardWeb.BoardLiveTest do
 
       {:ok, _view, html} = live(unique_conn(conn, 8), to)
       assert html =~ "Untitled thread"
+      assert html =~ "Only the body"
     end
   end
 

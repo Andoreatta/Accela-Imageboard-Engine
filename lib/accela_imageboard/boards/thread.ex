@@ -9,6 +9,26 @@ defmodule AccelaImageboard.Boards.Thread do
   `post_count`/`first_post_id`/`last_post_id` aggregates all ignore moderated
   (soft-deleted) posts (audit A1).
 
+  ## Threads start with their opening post
+
+  `:create` takes a `:body` argument (required, same shape as `Post.body`) that
+  becomes the thread's opening post: `AccelaImageboard.Boards.Changes.CreateOpPost`
+  creates it in the same transaction through `Post`'s `:create_op` action, with
+  `is_op == true` and the poster identity taken from the same anonymous context
+  (`context[:anonymous][:ip_hash]`), so a thread is never empty and never
+  unattributed. The thread itself stores no body.
+
+  One human action costs one rate-limit token: `:create` charges
+  `:thread_create` and the OP is created by an action with no rate-limit change,
+  so a new thread does not also burn a `post_create` token.
+
+  ## Bumping
+
+  A reply bumps its thread (`bumped_at`) through
+  `AccelaImageboard.Boards.Changes.BumpThread`, authorized by the reply flow on
+  an open thread (see `:post_bump`). A locked or archived thread never bumps,
+  and staff keep their own branch to bump on purpose.
+
   ## Ordering and pagination
 
   The thread list of a board is `pinned DESC, bumped_at DESC` (Ash appends the
@@ -66,7 +86,14 @@ defmodule AccelaImageboard.Boards.Thread do
       authorize_if(AccelaImageboard.PolicyChecks.Staff)
     end
 
-    policy action([:post_bump, :staff_update, :destroy]) do
+    policy action(:post_bump) do
+      description("A stored reply bumps its thread; staff can also bump a thread on purpose")
+
+      authorize_if(AccelaImageboard.Boards.Checks.ReplyBumpFlow)
+      authorize_if(AccelaImageboard.PolicyChecks.Staff)
+    end
+
+    policy action([:staff_update, :destroy]) do
       authorize_if(AccelaImageboard.PolicyChecks.Staff)
     end
   end
@@ -139,7 +166,16 @@ defmodule AccelaImageboard.Boards.Thread do
       change({AccelaImageboard.Boards.Changes.RateLimit, key: :thread_create})
       change(AccelaImageboard.Boards.Changes.BannedPoster)
 
+      # The OP is created in this action's transaction, from this argument.
+      change(AccelaImageboard.Boards.Changes.CreateOpPost)
+
       accept([:subject, :name, :board_id])
+
+      argument :body, :string do
+        description("Opening post body — stored on the thread's first post, not on the thread")
+        allow_nil?(false)
+        constraints(max_length: 10_000, min_length: 1)
+      end
     end
 
     update :post_bump do

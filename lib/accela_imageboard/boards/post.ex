@@ -10,6 +10,20 @@ defmodule AccelaImageboard.Boards.Post do
   filters `is_nil(deleted_at)`, so a moderated post disappears for everyone
   except staff, who reach it through the `:moderation_queue` action.
 
+  ## Replies bump, OPs do not
+
+  A post created through `:create` is a **reply**: once it is committed,
+  `AccelaImageboard.Boards.Changes.BumpThread` bumps the parent thread (see
+  `AccelaImageboard.Boards.Checks.ReplyBumpFlow`). A refused bump never discards
+  the reply.
+
+  A post created through `:create_op` is the **opening post** of a thread: it is
+  only reachable from `Thread.create`'s own flow (marker plus open thread, see
+  `AccelaImageboard.Boards.Checks.OpPostFlow`), it forces `is_op`, and it does
+  not bump — the thread was just created at the top of the board. It also runs
+  no rate-limit change, because `:thread_create` already charged that human
+  action.
+
   ## Pagination
 
   `:in_thread` uses keyset pagination (`default_limit: 25`, not countable) and
@@ -67,6 +81,12 @@ defmodule AccelaImageboard.Boards.Post do
       description("Anonymous posting is allowed on open threads")
       authorize_if(AccelaImageboard.Boards.Checks.ThreadOpen)
       authorize_if(AccelaImageboard.PolicyChecks.Staff)
+    end
+
+    policy action(:create_op) do
+      description("The opening post is created by its own thread-creation flow, never on its own")
+
+      authorize_if(AccelaImageboard.Boards.Checks.OpPostFlow)
     end
 
     policy action([:moderate, :destroy]) do
@@ -146,6 +166,22 @@ defmodule AccelaImageboard.Boards.Post do
       change({AccelaImageboard.Boards.Changes.RateLimit, key: :post_create})
       change(AccelaImageboard.Boards.Changes.BannedPoster)
       change(AccelaImageboard.Boards.Changes.SetPosterHash)
+
+      # Imageboard ordering: a stored reply moves its thread to the top.
+      change(AccelaImageboard.Boards.Changes.BumpThread)
+
+      accept([:body, :name, :thread_id])
+    end
+
+    # The opening post of a thread, created by `Thread.create` itself (see
+    # `AccelaImageboard.Boards.Changes.CreateOpPost`). No rate-limit change: the
+    # `thread_create` bucket already paid for that one human action.
+    create :create_op do
+      description("The opening post of a thread — reachable only from the thread-creation flow")
+
+      change(AccelaImageboard.Boards.Changes.BannedPoster)
+      change(AccelaImageboard.Boards.Changes.SetPosterHash)
+      change(set_attribute(:is_op, true))
 
       accept([:body, :name, :thread_id])
     end

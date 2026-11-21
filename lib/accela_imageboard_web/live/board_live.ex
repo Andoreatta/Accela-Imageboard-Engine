@@ -8,6 +8,10 @@ defmodule AccelaImageboardWeb.BoardLive do
   Starting a thread is the one write this page performs; the anonymous identity is
   taken from the socket peer data at mount and passed to Ash through the action
   context, never from form parameters.
+
+  A thread is never born empty: the form carries the opening post's body, which
+  `Thread.create` accepts as a `:body` argument and stores on the thread's first
+  post (inside the same transaction, so a thread without its OP cannot exist).
   """
 
   use AccelaImageboardWeb, :live_view
@@ -165,6 +169,16 @@ defmodule AccelaImageboardWeb.BoardLive do
               label="Name (optional)"
               maxlength="60"
               placeholder="Anonymous"
+            />
+
+            <.input
+              field={@thread_form[:body]}
+              type="textarea"
+              label="Comment"
+              rows="4"
+              required
+              maxlength="10000"
+              placeholder="Open the thread with something worth reading..."
             />
 
             <.input field={@thread_form[:board_id]} type="hidden" />

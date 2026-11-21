@@ -106,12 +106,19 @@ defmodule AccelaImageboard.DataCase do
 
   @doc """
   Creates a thread in `board` with a fresh anonymous poster identity.
+
+  `Thread.create` creates the thread's opening post in the same transaction, so
+  the fixture passes a `:body` (the OP's body) along with the subject.
   """
   def create_thread(board, opts \\ []) do
     {:ok, thread} =
       Ash.create(
         AccelaImageboard.Boards.Thread,
-        %{board_id: board.id, subject: Keyword.get(opts, :subject, "OP")},
+        %{
+          board_id: board.id,
+          subject: Keyword.get(opts, :subject, "OP"),
+          body: Keyword.get(opts, :body, "opening post")
+        },
         context: Keyword.get_lazy(opts, :context, fn -> anon_context("thread") end),
         authorize?: false
       )

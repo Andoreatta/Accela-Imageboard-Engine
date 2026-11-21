@@ -24,19 +24,16 @@ defmodule AccelaImageboardWeb.ThreadLive do
 
   ## Bumping
 
-  `Thread.post_bump` is staff-authorized in the domain, so an anonymous reply cannot
-  bump its thread yet. The bump is attempted through the public API with a nil actor
-  and a policy denial is tolerated (see `bump_thread/1`): nothing is bypassed with
-  `authorize?: false`, and once the domain exposes an anonymous bump path this starts
-  working with no change here. Until then a board orders threads by their last
-  staff-sanctioned bump.
+  A reply bumps its thread in the domain: `Post.create` runs
+  `AccelaImageboard.Boards.Changes.BumpThread`, which stores the new `bumped_at`
+  through `Thread.post_bump` under the server-side reply marker. This page
+  therefore never writes the thread itself - posting a reply is enough for the
+  thread to move back to the top of its board.
   """
 
   use AccelaImageboardWeb, :live_view
 
   import AccelaImageboardWeb.BoardComponents
-
-  require Logger
 
   alias AccelaImageboard.Boards.Media
   alias AccelaImageboard.Boards.Post
@@ -158,8 +155,6 @@ defmodule AccelaImageboardWeb.ThreadLive do
   end
 
   defp after_reply(socket, post) do
-    _ = bump_thread(socket.assigns.thread)
-
     socket
     |> assign(:reply_form, reply_form(socket.assigns.thread, socket.assigns.ip_hash))
     |> stream_insert(:posts, load_media(post))
@@ -169,25 +164,6 @@ defmodule AccelaImageboardWeb.ThreadLive do
     do: put_flash(socket, :error, "Your post was published, but the image could not be attached.")
 
   defp maybe_warn_about_media(socket, _ok), do: socket
-
-  # The domain's `:post_bump` action is authorized for staff only, so this call is
-  # expected to be refused for an anonymous poster. It is attempted anyway - through
-  # the public API, with no `authorize?: false` shortcut - so that opening the
-  # policy later needs no change here. The denial is not an error for the reply.
-  defp bump_thread(thread) do
-    case Ash.update(thread, %{}, action: :post_bump, actor: nil) do
-      {:ok, _bumped} ->
-        :ok
-
-      {:error, %Ash.Error.Forbidden{}} ->
-        Logger.debug("anonymous reply did not bump thread #{thread.id}: post_bump is staff-only")
-        :policy_denied
-
-      {:error, reason} ->
-        Logger.debug("thread bump failed: #{inspect(reason)}")
-        :error
-    end
-  end
 
   defp load_media(post) do
     case Ash.load(post, :media) do
